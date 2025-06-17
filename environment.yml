@@ -15,6 +15,7 @@ dependencies:
     - gym-super-mario-bros
     - nes_py==8.2.1
     - keyboard
+    - opencv-python==4.11.0.86
     - "--find-links https://download.pytorch.org/whl/torch/"
     - torch==2.6.0; sys_platform != "linux" and sys_platform != "win32"
     - torch==2.6.0+cpu; sys_platform == "linux" or sys_platform == "win32"
