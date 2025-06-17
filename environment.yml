@@ -1,0 +1,20 @@
+name: MarioBros
+channels:
+  - defaults
+  - conda-forge
+dependencies:
+  - python=3.11
+  - tensorboard=2.17.0
+  - pyyaml=6.0.2
+  - pip=25.0
+  - pip:
+    - numpy==1.24.4
+    - pandas==2.2.3
+    - gym==0.23.1
+    - pynput
+    - gym-super-mario-bros
+    - nes_py==8.2.1
+    - keyboard
+    - "--find-links https://download.pytorch.org/whl/torch/"
+    - torch==2.6.0; sys_platform != "linux" and sys_platform != "win32"
+    - torch==2.6.0+cpu; sys_platform == "linux" or sys_platform == "win32"
