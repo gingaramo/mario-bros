@@ -37,6 +37,9 @@ class Agent:
     for state, action, reward, next_state, done in minibatch:
       target = reward
       if not done:
+        # Stack the next state to the previous states
+        next_state = torch.concat(
+            [state[1:, :], next_state.unsqueeze(0)], axis=0)
         target = (reward + self.gamma * torch.max(self.model(next_state)))
       target_f = self.model(state)
       target_t = target_f.clone()

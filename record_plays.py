@@ -11,7 +11,7 @@ from nes_py.wrappers import JoypadSpace
 
 import preprocess
 
-env = gym_super_mario_bros.make('SuperMarioBrosRandomStages-v2')
+env = gym_super_mario_bros.make('SuperMarioBrosRandomStages-v0')
 # See https://pypi.org/project/gym-super-mario-bros/
 env = JoypadSpace(env, SIMPLE_MOVEMENT)
 
@@ -27,7 +27,11 @@ print("  E: Record Episode and Start Over")
 print("  Q: Quit and Save Traces")
 print("-----------------------------------------")
 
-pre = preprocess.preprocess_lambda((120, 128))  # Preprocessing function
+target_state_size = (84, 110)  # Target size after preprocessing
+pixels_to_crop = 26  # Number of top pixels to crop
+cropped_state_size = (target_state_size[0],
+                      target_state_size[1] - pixels_to_crop)
+pre = preprocess.preprocess_lambda(target_state_size, pixels_to_crop)
 current_state = env.reset()
 # Check if it returned a tuple (state, info) for newer gym with compatibility
 if isinstance(current_state, tuple) and len(current_state) == 2:
