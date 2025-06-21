@@ -22,6 +22,8 @@ class Agent:
     self.epsilon_decay = config['epsilon_decay']
     self.learning_rate = config['learning_rate']
     self.batch_size = config['batch_size']
+    self.last_action = None
+    self.last_action_repeated = 0
     self.replay_every_n_steps = config['replay_every_n_steps']
     self.preprocess = StatePreprocess(config['preprocess'])
     if 'dqn' in config['network']:
@@ -48,10 +50,23 @@ class Agent:
   def act(self, state: np.ndarray) -> int:
     """Returns the action to take based on the current state."""
     self.preprocess.add(state)
+    if self.config['action_repeat_steps'] > 1:
+      if self.last_action_repeated == self.config['action_repeat_steps']:
+        self.last_action_repeated = 0
+        # And continue with a new action
+      elif self.last_action is not None:
+        self.last_action_repeated += 1
+        # Repeat the last action
+        return self.last_action
+
+    action = None
     if np.random.rand() <= self.epsilon:
-      return random.randrange(self.action_size)
-    act_values = self.model(self.preprocess())
-    return torch.argmax(act_values).item()
+      action = random.randrange(self.action_size)
+    else:
+      act_values = self.model(self.preprocess())
+      action = torch.argmax(act_values).item()
+    self.last_action = action
+    return action
 
   def replay(self, timestep):
     if len(self.memory) < self.batch_size:

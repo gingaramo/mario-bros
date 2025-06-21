@@ -1,0 +1,39 @@
+# Random agent that does not learn, just takes random actions
+# and is good for testing the environment setup and having baselines.
+
+# Environment parameters
+env:
+  env_name: "SuperMarioBrosRandomStages-v0"
+  max_steps_per_episode: 1000
+  render: true
+  num_episodes: 1000
+
+# Device configuration
+device: mps
+
+agent:
+  # Learning parameters
+  gamma: 0.99
+  epsilon: 1.0
+  epsilon_min: 1.0
+  epsilon_decay: 1.0
+  learning_rate: 0.001
+  batch_size: 32
+  memory_size: 1 # No memory for random agent
+  optimizer: "adam"
+  
+  # Action parameters
+  action_repeat_steps: 4
+  replay_every_n_steps: 10000 # Never replay
+
+  preprocess:
+    # Input shape for the NN will be (`stack_frames`, 84, 84)
+    resize_shape: [84, 84]
+    grayscale: true
+    normalize: true
+    stack_frames: 1
+
+  network:
+    dqn:
+      hidden_layers: [1] # Hidden layers for the neural network
+      activation: "ReLU"   # Non-linear
