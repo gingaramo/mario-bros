@@ -76,22 +76,23 @@ class Agent:
       return
 
     minibatch = random.sample(self.memory, self.batch_size)
+    # TODO: Vectorize the minibatch to avoid for loops.
     for state, action, reward, next_state, done in minibatch:
-      target = reward
-      if not done:
-        # Stack the next state to the previous states
-        next_state = torch.concat([
-            state[1:, :],
-            torch.Tensor(next_state).unsqueeze(0).to(self.device)
-        ],
-                                  axis=0)
-        with torch.no_grad():
-          target = (reward + self.gamma * torch.max(self.model(next_state)))
-      target_f = self.model(state)
-      target_t = target_f.clone()
-      target_t[action] = target
+      # Stack the next state to the previous states
+      next_state = torch.concat([
+          state[1:, :],
+          torch.Tensor(next_state).unsqueeze(0).to(self.device)
+      ],
+                                axis=0)
+      with torch.no_grad():
+        target = reward if done else reward + self.gamma * torch.max(
+            self.model(next_state))
+        # If we are done, the reward will be just an integer.
+        target = torch.tensor(target, dtype=torch.float).to(self.device)
+      q_pred = self.model(state)[action]
+      loss = nn.MSELoss()(q_pred, target)
+
       self.optimizer.zero_grad()
-      loss = nn.MSELoss()(target_f, target_t)
       loss.backward()
       self.optimizer.step()
     if self.epsilon > self.epsilon_min:
