@@ -1,0 +1,41 @@
+# basic configuration for a reinforcement learning agent
+# that mirrors "Playing Atari with Deep Reinforcement Learning"
+
+# Environment parameters
+env:
+  env_name: "SuperMarioBrosRandomStages-v0"
+  max_steps_per_episode: 1000
+  render: true
+  num_episodes: 1000
+
+# Device configuration
+device: mps
+
+agent:
+  # Learning parameters
+  gamma: 0.99
+  epsilon: 1.0
+  epsilon_min: 0.01
+  epsilon_decay: 0.995
+  learning_rate: 0.001
+  batch_size: 32
+  memory_size: 10000
+  optimizer: "adam"         # Optimizer for training the neural network
+  
+  # Action parameters
+  action_repeat_steps: 4
+  replay_every_n_steps: 4
+
+  preprocess:
+    # Input shape for the NN will be (`stack_frames`, 84, 84)
+    resize_shape: [84, 84]
+    grayscale: true
+    normalize: true
+    stack_frames: 4
+
+  network:
+    dqn:
+      hidden_layers: [256] # Hidden layers for the neural network
+      activation: "ReLU"   # Non-linear
+#save_model_freq: 100       # Episodes between saving model checkpoints
+#log_interval: 10           # Episodes between logging progress
