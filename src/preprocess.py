@@ -6,10 +6,13 @@ import torch
 class StatePreprocess(object):
   """Class to preprocess the state for the Network."""
 
-  def __init__(self, config: dict):
+  def __init__(self, device, config: dict):
+    self.device = device
     self.stack_frames = config['stack_frames']
-    self.stacked_frames = [np.zeros(config['resize_shape'], dtype=np.float32)
-                           ] * self.stack_frames
+    self.stacked_frames = [
+        torch.zeros(config['resize_shape']).to(self.device)
+        for _ in range(self.stack_frames)
+    ]
     self.resize_shape = tuple(config['resize_shape'])
     self.grayscale = config['grayscale']
     self.normalize = config['normalize']
@@ -26,8 +29,10 @@ class StatePreprocess(object):
   def add(self, state: np.ndarray) -> None:
     """Adds a new frame to the stack of frames."""
     self.stacked_frames.pop(0)
-    self.stacked_frames.append(self.preprocess(state))
+    self.stacked_frames.append(
+        torch.Tensor(self.preprocess(state)).to(self.device))
 
   def __call__(self) -> torch.tensor:
     """Returns the input for the model."""
-    return torch.Tensor(self.stacked_frames)
+    # Stack the list of tensors along a new dimension (e.g., dim=0 for channels).
+    return torch.stack(self.stacked_frames, dim=0)

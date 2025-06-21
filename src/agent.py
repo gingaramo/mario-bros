@@ -25,12 +25,13 @@ class Agent:
     self.last_action = None
     self.last_action_repeated = 0
     self.replay_every_n_steps = config['replay_every_n_steps']
-    self.preprocess = StatePreprocess(config['preprocess'])
+    self.preprocess = StatePreprocess(self.device, config['preprocess'])
     if 'dqn' in config['network']:
       self.model = DQN(action_size, self.preprocess(),
                        config['network']['dqn'])
     else:
       raise ValueError("Network configuration must include a valid model.")
+    self.model.to(self.device)
 
     if config['optimizer'] == 'adam':
       self.optimizer = optim.Adam(self.model.parameters(),
@@ -42,7 +43,7 @@ class Agent:
   def remember(self, action, reward, next_state, done):
     """Stores experience. State gathered from last state sent to act().
     """
-    self.memory.append((self.preprocess(), action, reward,
+    self.memory.append((self.preprocess().to(self.device), action, reward,
                         self.preprocess.preprocess(next_state), done))
     if len(self.memory) > self.memory_size:
       self.memory.pop(random.randint(0, len(self.memory) - 1))
@@ -63,7 +64,7 @@ class Agent:
     if np.random.rand() <= self.epsilon:
       action = random.randrange(self.action_size)
     else:
-      act_values = self.model(self.preprocess())
+      act_values = self.model(self.preprocess().to(self.device))
       action = torch.argmax(act_values).item()
     self.last_action = action
     return action
@@ -74,17 +75,18 @@ class Agent:
     if timestep % self.replay_every_n_steps != 0:
       return
 
-    print(
-        f"Replaying at timestep {timestep} with memory size {len(self.memory)}"
-    )
     minibatch = random.sample(self.memory, self.batch_size)
     for state, action, reward, next_state, done in minibatch:
       target = reward
       if not done:
         # Stack the next state to the previous states
-        next_state = torch.concat(
-            [state[1:, :], torch.Tensor(next_state).unsqueeze(0)], axis=0)
-        target = (reward + self.gamma * torch.max(self.model(next_state)))
+        next_state = torch.concat([
+            state[1:, :],
+            torch.Tensor(next_state).unsqueeze(0).to(self.device)
+        ],
+                                  axis=0)
+        with torch.no_grad():
+          target = (reward + self.gamma * torch.max(self.model(next_state)))
       target_f = self.model(state)
       target_t = target_f.clone()
       target_t[action] = target

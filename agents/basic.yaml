@@ -11,17 +11,17 @@ env:
   num_episodes: 1000
 
 # Device configuration
-device: mps
+device: cpu  # Surprise surprise, much faster on CPU than MPS
 
 agent:
   # Learning parameters
   gamma: 0.99
   epsilon: 1.0
-  epsilon_min: 0.01
+  epsilon_min: 0.02
   epsilon_decay: 0.995
   learning_rate: 0.001
-  batch_size: 32
-  memory_size: 10000
+  batch_size: 16
+  memory_size: 1000
   optimizer: "adam"         # Optimizer for training the neural network
   
   # Action parameters
@@ -33,7 +33,7 @@ agent:
     resize_shape: [84, 84]
     grayscale: true
     normalize: true
-    stack_frames: 4
+    stack_frames: 16
 
   network:
     dqn:
