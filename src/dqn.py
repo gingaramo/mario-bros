@@ -3,17 +3,6 @@ import random
 import torch
 import torch.nn as nn
 
-device = torch.device("mps")
-
-# TODO
-# image preprocess
-# stacking frames
-
-# Papers
-# - Playing Atari with Deep Reinforcement Learning (https://arxiv.org/pdf/1312.5602)
-# - Human-level control through deep reinforcement learning (https://www.nature.com/articles/nature14236)
-# - Double DQN (https://arxiv.org/pdf/1509.06461)
-
 
 # Define the DQN model
 class DQN(nn.Module):

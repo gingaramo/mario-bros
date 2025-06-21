@@ -9,7 +9,7 @@ import keyboard
 from gym_super_mario_bros.actions import SIMPLE_MOVEMENT
 from nes_py.wrappers import JoypadSpace
 
-import preprocess
+import src.preprocess
 
 env = gym_super_mario_bros.make('SuperMarioBrosRandomStages-v0')
 # See https://pypi.org/project/gym-super-mario-bros/

@@ -3,8 +3,8 @@ import random
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from dqn import DQN
-from preprocess import StatePreprocess
+from src.dqn import DQN
+from src.preprocess import StatePreprocess
 
 
 # Define the agent class
