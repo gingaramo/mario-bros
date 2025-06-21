@@ -27,12 +27,19 @@ class DQN(nn.Module):
     self.fc2 = nn.Linear(hidden_layers[0], action_size)
 
   def forward(self, x):
-    # Add batch dimension.
-    x = x.unsqueeze(0)
+    # Add batch dimension if input is (C, H, W)
+    has_batch_dim = False
+    if x.ndim > 3:
+      has_batch_dim = True
+
+    if not has_batch_dim:
+      x = x.unsqueeze(0)
     x = torch.relu(self.conv1(x))
     x = torch.relu(self.conv2(x))
     # Add it again after flattening.
-    x = x.flatten().unsqueeze(0)
+    x = x.flatten(start_dim=1)
     x = torch.relu(self.fc1(x))
     x = self.fc2(x)
-    return x.squeeze(0)  # Remove batch dimension for output
+    if not has_batch_dim:
+      x = x.squeeze(0)  # Remove batch dimension if it was added
+    return x

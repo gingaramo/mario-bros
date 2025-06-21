@@ -3,6 +3,7 @@ import random
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import math
 from src.dqn import DQN
 from src.preprocess import StatePreprocess
 
@@ -76,24 +77,30 @@ class Agent:
       return
 
     minibatch = random.sample(self.memory, self.batch_size)
-    # TODO: Vectorize the minibatch to avoid for loops.
-    for state, action, reward, next_state, done in minibatch:
-      # Stack the next state to the previous states
-      next_state = torch.concat([
-          state[1:, :],
-          torch.Tensor(next_state).unsqueeze(0).to(self.device)
-      ],
-                                axis=0)
-      with torch.no_grad():
-        target = reward if done else reward + self.gamma * torch.max(
-            self.model(next_state))
-        # If we are done, the reward will be just an integer.
-        target = torch.tensor(target, dtype=torch.float).to(self.device)
-      q_pred = self.model(state)[action]
-      loss = nn.MSELoss()(q_pred, target)
+    all_state, all_action, all_reward, all_next_state, all_done = zip(
+        *minibatch)  # Unzip the minibatch into separate lists
 
-      self.optimizer.zero_grad()
-      loss.backward()
-      self.optimizer.step()
+    all_state = torch.stack(all_state).to(self.device)
+    all_action = torch.tensor(all_action, dtype=torch.int64).to(self.device)
+    all_reward = torch.tensor(all_reward, dtype=torch.float).to(self.device)
+    all_next_state = torch.tensor(all_next_state, dtype=torch.float).to(
+        self.device).unsqueeze(1)
+    all_next_state = torch.concat([all_state[:, 1:, :], all_next_state],
+                                  axis=1)
+    all_done = torch.tensor(all_done, dtype=torch.bool).to(self.device)
+
+    with torch.no_grad():
+      q_next, _ = torch.max(self.model(all_next_state), dim=1)
+      target = all_reward + self.gamma * q_next * ~all_done
+
+    q_pred = torch.gather(self.model(all_state), 1,
+                          all_action.view(-1, 1)).squeeze(1)
+    loss = nn.MSELoss()(q_pred, target)
+    print(f"Loss: {math.log(loss.item())} at timestep {timestep}")
+
+    self.optimizer.zero_grad()
+    loss.backward()
+    self.optimizer.step()
+
     if self.epsilon > self.epsilon_min:
       self.epsilon *= self.epsilon_decay

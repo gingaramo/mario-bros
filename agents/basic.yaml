@@ -11,7 +11,7 @@ env:
   num_episodes: 1000
 
 # Device configuration
-device: cpu  # Surprise surprise, much faster on CPU than MPS
+device: mps
 
 agent:
   # Learning parameters
@@ -26,14 +26,14 @@ agent:
   
   # Action parameters
   action_repeat_steps: 4
-  replay_every_n_steps: 4
+  replay_every_n_steps: 8
 
   preprocess:
     # Input shape for the NN will be (`stack_frames`, 84, 84)
     resize_shape: [84, 84]
     grayscale: true
     normalize: true
-    stack_frames: 16
+    stack_frames: 4
 
   network:
     dqn:
