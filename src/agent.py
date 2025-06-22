@@ -70,6 +70,20 @@ class Agent:
     self.last_action = action
     return action
 
+  def get_loss(self):
+    if self.config['loss'] == 'mse':
+      self.get_loss = nn.MSELoss
+    elif self.config['loss'] == 'smooth_l1':
+      self.get_loss = nn.SmoothL1Loss
+    else:
+      raise ValueError(f"Unsupported loss function: {self.config['loss']}")
+    return self.get_loss()
+
+  def clip_gradients(self):
+    if self.config['clip_gradients'] is not None:
+      nn.utils.clip_grad_norm_(self.model.parameters(),
+                               self.config['clip_gradients'])
+
   def replay(self, timestep):
     if len(self.memory) < self.batch_size:
       return
@@ -95,11 +109,14 @@ class Agent:
 
     q_pred = torch.gather(self.model(all_state), 1,
                           all_action.view(-1, 1)).squeeze(1)
-    loss = nn.MSELoss()(q_pred, target)
-    print(f"Loss: {math.log(loss.item())} at timestep {timestep}")
+    loss = self.get_loss()(q_pred, target)
 
+    print(
+        f"Log loss: {math.log(loss.item())} at timestep {timestep}. Epsilon: {self.epsilon}. Q-values: {q_pred.mean().item()}. Target: {target.mean().item()}. "
+    )
     self.optimizer.zero_grad()
     loss.backward()
+    self.clip_gradients()
     self.optimizer.step()
 
     if self.epsilon > self.epsilon_min:
