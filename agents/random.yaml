@@ -3,12 +3,12 @@
 
 # Environment parameters
 env:
-  env_name: "SuperMarioBrosRandomStages-v0"
+  env_name: "SuperMarioBros-v0"
   # If true, we'll give reward equal to score delta.
   use_score: true
-  max_steps_per_episode: 1000
+  max_steps_per_episode: 3000
   render: true
-  num_episodes: 5
+  num_episodes: 100
 
 # Device configuration
 device: mps

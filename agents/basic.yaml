@@ -6,9 +6,9 @@ env:
   env_name: "SuperMarioBrosRandomStages-v0"
   # If true, we'll give reward equal to score delta.
   use_score: true
-  max_steps_per_episode: 1000
+  max_steps_per_episode: 10000
   render: true
-  num_episodes: 100
+  num_episodes: 1000
 
 # Device configuration
 device: mps
@@ -20,7 +20,7 @@ agent:
   epsilon_min: 0.02
   epsilon_decay: 0.9995
   learning_rate: 0.0001
-  batch_size: 32
+  batch_size: 128
   memory_size: 100000
   loss: "smooth_l1" 
   clip_gradients: 0.15
@@ -28,7 +28,8 @@ agent:
   
   # Action parameters
   action_repeat_steps: 4
-  replay_every_n_steps: 64
+  replay_every_n_steps: 256
+  replays_until_target_update: 4096
 
   preprocess:
     # Input shape for the NN will be (`stack_frames`, 84, 84)

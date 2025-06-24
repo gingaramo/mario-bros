@@ -14,11 +14,13 @@ class DQN(nn.Module):
     mock_input = mock_input.to(torch.device('cpu'))
     self.conv1 = nn.Conv2d(mock_input.shape[0], 16, 8, stride=4)
     self.conv2 = nn.Conv2d(16, 32, 4, stride=2)
+    self.conv3 = nn.Conv2d(32, 64, 4, stride=2)
 
     def _get_flattened_shape(x: torch.Tensor) -> int:
       x = x.unsqueeze(0)
       x = self.conv1(x)
       x = self.conv2(x)
+      x = self.conv3(x)
       return x.flatten().shape[0]
 
     hidden_layers = config['hidden_layers']
@@ -36,6 +38,7 @@ class DQN(nn.Module):
       x = x.unsqueeze(0)
     x = torch.relu(self.conv1(x))
     x = torch.relu(self.conv2(x))
+    x = torch.relu(self.conv3(x))
     # Add it again after flattening.
     x = x.flatten(start_dim=1)
     x = torch.relu(self.fc1(x))
