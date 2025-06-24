@@ -72,9 +72,7 @@ def main(args):
 
     writer.add_scalar('Reward/Total', total_reward, episode)
 
-  writer.close()  # <-- Close the writer
-
-  # agent.save(args.model_path)
+  writer.close()
   env.close()
   cv2.destroyAllWindows()
 

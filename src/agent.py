@@ -52,8 +52,11 @@ class Agent:
   def remember(self, action, reward, next_state, done):
     """Stores experience. State gathered from last state sent to act().
     """
-    self.memory.append((self.preprocess().to(self.device), action, reward,
-                        self.preprocess.preprocess(next_state), done))
+    state_cpu = self.preprocess().cpu().detach().numpy()
+    next_state_cpu = self.preprocess.preprocess(next_state)
+    if isinstance(next_state_cpu, torch.Tensor):
+      next_state_cpu = next_state_cpu.cpu().detach().numpy()
+    self.memory.append((state_cpu, action, reward, next_state_cpu, done))
     if len(self.memory) > self.memory_size:
       self.memory.pop(random.randint(0, len(self.memory) - 1))
 
@@ -87,14 +90,15 @@ class Agent:
                        ) / self.action_selection_temperature
         probs = exp_q / np.sum(exp_q)
         action = np.random.choice(self.action_size, p=probs)
+        act_values = probs
       elif self.action_selection == 'max':
         # Greedy action selection
         action = torch.argmax(act_values).item()
+        act_values = act_values_np
       else:
         raise ValueError(
             f"Unsupported action selection method: {self.action_selection}. Supported: 'softmax', 'max'."
         )
-      act_values = act_values_np
     self.last_action = action
     self.last_q_values = act_values
     return action, act_values
@@ -122,13 +126,16 @@ class Agent:
 
     minibatch = random.sample(self.memory, self.batch_size)
     all_state, all_action, all_reward, all_next_state, all_done = zip(
-        *minibatch)  # Unzip the minibatch into separate lists
+        *minibatch)
 
-    all_state = torch.stack(all_state).to(self.device)
+    # Convert numpy arrays to tensors and move to device only here
+    all_state = torch.tensor(np.stack(all_state),
+                             dtype=torch.float).to(self.device)
     all_action = torch.tensor(all_action, dtype=torch.int64).to(self.device)
     all_reward = torch.tensor(all_reward, dtype=torch.float).to(self.device)
-    all_next_state = torch.tensor(all_next_state, dtype=torch.float).to(
-        self.device).unsqueeze(1)
+    all_next_state = torch.tensor(np.stack(all_next_state),
+                                  dtype=torch.float).to(
+                                      self.device).unsqueeze(1)
     all_next_state = torch.concat([all_state[:, 1:, :], all_next_state],
                                   axis=1)
     all_done = torch.tensor(all_done, dtype=torch.bool).to(self.device)
