@@ -76,7 +76,7 @@ class Agent:
       act_values: The Q-values predicted by the model for the current state.
     """
     self.state.add(state)
-    if self.action_repeat_steps and self.last_action_repeated < self.action_repeat_steps:
+    if self.action_repeat_steps and self.last_action != None and self.last_action_repeated < self.action_repeat_steps:
       self.last_action_repeated += 1
       # Repeat the last action
       return self.last_action, self.last_q_values
