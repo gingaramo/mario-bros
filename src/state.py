@@ -3,8 +3,12 @@ import numpy as np
 import torch
 
 
-class StatePreprocess(object):
-  """Class to preprocess the state for the Network."""
+class State(object):
+  """Class to preprocess and feed state for the Network.
+  
+  Captures teh logic for stacking frames, resizing, converting to grayscale,
+  and normalizing the input state for the model.
+  """
 
   def __init__(self, device, config: dict):
     self.device = device
@@ -32,7 +36,7 @@ class StatePreprocess(object):
     self.stacked_frames.append(
         torch.Tensor(self.preprocess(state)).to(self.device))
 
-  def __call__(self) -> torch.tensor:
+  def current(self) -> torch.tensor:
     """Returns the input for the model."""
     # Stack the list of tensors along a new dimension (e.g., dim=0 for channels).
     return torch.stack(self.stacked_frames, dim=0)

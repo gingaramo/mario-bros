@@ -26,7 +26,6 @@ def main(args):
   device = torch.device(config['device'])
   print(f"Using device: {device}")
 
-  print(f"{env.action_space.n=}")
   agent = Agent(env.action_space.n, device, config['agent'])
   agent_performance = []
 
@@ -36,20 +35,20 @@ def main(args):
 
   for episode in range(config['env']['num_episodes']):
     state = env.reset()
-    world = env.unwrapped._world
-    stage = env.unwrapped._stage
-    score = env.unwrapped._score
     total_reward = 0
     done = False
+    last_score = None
 
     for timestep in range(config['env']['max_steps_per_episode']):
       action, q_values = agent.act(state)
       next_state, reward, done, info = env.step(action)
+      world, stage, score = info['world'], info['stage'], info['score']
 
-      # Perhaps I should use info['score'] instead of env.unwrapped._score?
-      if config['env']['use_score'] and score != env.unwrapped._score:
-        reward = (env.unwrapped._score - score) / 100.0
-        score = env.unwrapped._score
+      # Amend reward with score change if configured.
+      if config['env'][
+          'use_score'] and last_score != None and last_score != score:
+        reward += (score - last_score) / 100.0
+      last_score = score
 
       render_mario_with_q_values(next_state, q_values, SIMPLE_MOVEMENT)
       agent.remember(action, reward, next_state, done)
