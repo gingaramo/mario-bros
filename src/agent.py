@@ -4,8 +4,10 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import math
+import os
 from src.dqn import DQN
 from src.state import State
+import pickle
 
 
 class Agent:
@@ -30,6 +32,20 @@ class Agent:
     self.epsilon_decay = config['epsilon_decay']
     self.learning_rate = config['learning_rate']
 
+    # Checkpoint functionality
+    _path = os.path.join("checkpoint/", config['name'])
+    if not os.path.exists(_path):
+      os.makedirs(_path)
+    self.checkpoint_path = os.path.join(_path, 'state_dict.pkl')
+    self.checkpoint_state_path = os.path.join(_path, "state.pkl")
+    if (not os.path.exists(self.checkpoint_path)
+        or not os.path.exists(self.checkpoint_state_path)):
+      self.episodes_trained = 0
+    else:
+      with open(self.checkpoint_state_path, "rb") as f:
+        state = pickle.load(f)
+        self.episodes_trained = state['episodes_trained']
+
     # Action selection parameters.
     self.action_selection = config.get('action_selection', 'max')
     self.action_selection_temperature = config.get(
@@ -38,6 +54,7 @@ class Agent:
     self.last_action = None
     self.last_action_repeated = 0
     self.action_repeat_steps = config.get('action_repeat_steps', None)
+    self.step = 0
 
     self.state = State(self.device, config['state'])
     if 'dqn' in config['network']:
@@ -45,6 +62,9 @@ class Agent:
                        config['network']['dqn'])
       self.target_model = DQN(action_size, self.state.current(),
                               config['network']['dqn'])
+      if os.path.exists(self.checkpoint_path):
+        self.model.load_state_dict(
+            torch.load(self.checkpoint_path, map_location=self.device))
       self.target_model.load_state_dict(self.model.state_dict())
     else:
       raise ValueError("Network configuration must include a valid model.")
@@ -122,10 +142,11 @@ class Agent:
       nn.utils.clip_grad_norm_(self.model.parameters(),
                                self.config['clip_gradients'])
 
-  def replay(self, timestep):
+  def replay(self):
     if len(self.memory) < self.batch_size:
       return
-    if timestep % self.replay_every_n_steps != 0:
+    self.step = self.step + 1
+    if self.step % self.replay_every_n_steps != 0:
       return
 
     minibatch = random.sample(self.memory, self.batch_size)
@@ -165,3 +186,13 @@ class Agent:
 
     if self.epsilon > self.epsilon_min:
       self.epsilon *= self.epsilon_decay
+
+  def episode_begin(self):
+    # Nothing for now
+    pass
+
+  def episode_end(self):
+    # Checkpoint
+    torch.save(self.model.state_dict(), self.checkpoint_path)
+    with open(self.checkpoint_state_path, "wb") as f:
+      pickle.dump({'episodes_trained': self.episodes_trained}, f)

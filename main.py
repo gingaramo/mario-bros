@@ -34,6 +34,7 @@ def main(args):
   writer = SummaryWriter(log_dir=log_dir)
 
   for episode in range(config['env']['num_episodes']):
+    agent.episode_begin()
     state = env.reset()
     total_reward = 0
     done = False
@@ -52,12 +53,13 @@ def main(args):
 
       render_mario_with_q_values(next_state, q_values, SIMPLE_MOVEMENT)
       agent.remember(action, reward, next_state, done)
-      agent.replay(timestep)
+      agent.replay()
       state = next_state
       total_reward += reward
       if done:
         break
 
+    agent.episode_end()
     print(
         f"Episode {episode + 1}/{config['env']['num_episodes']} - Total Reward: {total_reward}, World: {(world, stage)}, Steps: {timestep + 1}"
     )
