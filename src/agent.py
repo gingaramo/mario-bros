@@ -180,10 +180,12 @@ class Agent:
     q_values = self.model(all_state)
     q_pred = torch.gather(q_values, 1, all_action.view(-1, 1)).squeeze(1)
     loss = self.get_loss()(q_pred, target)
-    self.summary_writer.add_scalar('Loss', loss, self.global_step)
-    self.summary_writer.add_scalar('Q-mean', torch.mean(q_values.flatten()),
+    self.summary_writer.add_scalar('Replay/Loss', loss, self.global_step)
+    self.summary_writer.add_scalar('Replay/Q-mean',
+                                   torch.mean(q_values.flatten()),
                                    self.global_step)
-    self.summary_writer.add_scalar('Epsilon', self.epsilon, self.global_step)
+    self.summary_writer.add_scalar('Replay/Epsilon', self.epsilon,
+                                   self.global_step)
 
     # Update target model every `target_update_frequency` steps
     self.replays_until_target_update -= 1
@@ -193,6 +195,9 @@ class Agent:
 
     self.optimizer.zero_grad()
     loss.backward()
+    self.summary_writer.add_scalar(
+        "Replay/Norm", torch.nn.utils.get_total_norm(self.model.parameters()),
+        self.global_step)
     self.clip_gradients()
     self.optimizer.step()
 
@@ -203,7 +208,18 @@ class Agent:
     # Nothing for now
     pass
 
-  def episode_end(self):
+  def episode_end(self, episode_info):
+    # Episode statistics
+    self.summary_writer.add_scalar("Episode/Reward",
+                                   episode_info['total_reward'],
+                                   self.global_step)
+    self.summary_writer.add_scalar("Episode/World", episode_info['world'],
+                                   self.global_step)
+    self.summary_writer.add_scalar("Episode/Stage", episode_info['stage'],
+                                   self.global_step)
+    self.summary_writer.add_scalar("Episode/Steps", episode_info['steps'],
+                                   self.global_step)
+
     # Checkpoint
     self.episodes_trained += 1
     torch.save(self.model.state_dict(), self.checkpoint_path)

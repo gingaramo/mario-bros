@@ -24,6 +24,7 @@ def main(args):
       shutil.rmtree(f"checkpoint/{config['agent']['name']}")
       shutil.rmtree(f"runs/tb_{config['agent']['name']}")
     except FileNotFoundError:
+      print("Failed to delete files")
       pass
 
   env = gym.make(config['env']['env_name'])
@@ -61,39 +62,19 @@ def main(args):
       if done:
         break
 
-    agent.episode_end()
-    print(
-        f"Episode {episode + 1}/{config['env']['num_episodes']} - Total Reward: {total_reward}, World: {(world, stage)}, Steps: {timestep + 1}"
-    )
-    performance = {
+    episode_info = {
         'total_reward': total_reward,
         'world': world,
         'stage': stage,
         'steps': timestep + 1
     }
-    agent_performance.append(performance)
+    agent.episode_end(episode_info)
+    print(
+        f"Episode {episode + 1}/{config['env']['num_episodes']} - Total Reward: {total_reward}, World: {(world, stage)}, Steps: {timestep + 1}"
+    )
 
   env.close()
   cv2.destroyAllWindows()
-
-  # Pickle performance to a file
-  timestamp = time.time()
-  date = time.strftime("%Y%m%d_%H%M%S", time.localtime(timestamp))
-  if not os.path.exists("runs"):
-    os.makedirs("runs")
-  performance_file = f"runs/performance_{date}.data"
-  config_file = f"runs/config_{date}.yaml"
-
-  # Pickle agent_performance
-  with open(performance_file, 'wb') as pf:
-    pickle.dump(agent_performance, pf)
-
-  # Save config yaml
-  with open(config_file, 'w') as cf:
-    yaml.dump(config, cf)
-
-  print(f"Saved performance to {performance_file}")
-  print(f"Saved config to {config_file}")
 
 
 if __name__ == "__main__":
