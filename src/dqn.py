@@ -25,10 +25,13 @@ class DQN(nn.Module):
 
     hidden_layers = config['hidden_layers']
     # FIX: Add support for hidden_layers being multi-layer.
-    self.fc1 = nn.Linear(_get_flattened_shape(mock_input), hidden_layers[0])
+    self.side_input_floats = 1  # Currently only last_action
+    self.fc1 = nn.Linear(
+        _get_flattened_shape(mock_input) + self.side_input_floats,
+        hidden_layers[0])
     self.fc2 = nn.Linear(hidden_layers[0], action_size)
 
-  def forward(self, x):
+  def forward(self, x, side_input):
     # Add batch dimension if input is (C, H, W)
     has_batch_dim = False
     if x.ndim > 3:
@@ -36,12 +39,13 @@ class DQN(nn.Module):
 
     if not has_batch_dim:
       x = x.unsqueeze(0)
+      side_input = side_input.unsqueeze(0)
     x = torch.relu(self.conv1(x))
     x = torch.relu(self.conv2(x))
     x = torch.relu(self.conv3(x))
     # Add it again after flattening.
     x = x.flatten(start_dim=1)
-    x = torch.relu(self.fc1(x))
+    x = torch.relu(self.fc1(torch.concat([x, side_input], dim=1)))
     x = self.fc2(x)
     if not has_batch_dim:
       x = x.squeeze(0)  # Remove batch dimension if it was added

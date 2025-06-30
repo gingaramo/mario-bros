@@ -63,6 +63,7 @@ def main(args):
         break
 
     episode_info = {
+        'episode': episode,
         'total_reward': total_reward,
         'world': world,
         'stage': stage,

@@ -21,13 +21,13 @@ agent:
   # Learning parameters
   gamma: 0.99
   epsilon: 1.0
-  epsilon_min: 0.02
-  epsilon_decay: 0.995
+  epsilon_min: 0.05
+  epsilon_decay: 0.9995
   learning_rate: 0.0001
   batch_size: 32
   memory_size: 1000
   loss: "smooth_l1"
-  clip_gradients: 0.15
+  clip_gradients: 0.5
   optimizer: "adam"         # Optimizer for training the neural network
   action_selection: "max"
   

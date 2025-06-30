@@ -92,7 +92,8 @@ class Agent:
     """
     curr_state = self.state.current().cpu().detach().numpy()
     next_state = self.state.preprocess(next_state)
-    self.memory.append((curr_state, action, reward, next_state, done))
+    self.memory.append(
+        (curr_state, self.last_action, action, reward, next_state, done))
     if len(self.memory) > self.memory_size:
       # TODO: Implement a more sophisticated memory management strategy
       self.memory.pop(random.randint(0, len(self.memory) - 1))
@@ -117,7 +118,9 @@ class Agent:
       action = random.randrange(self.action_size)
       act_values = np.zeros((self.action_size, ))
     else:
-      act_values = self.model(self.state.current().to(self.device))
+      act_values = self.model(
+          self.state.current().to(self.device),
+          torch.tensor([self.last_action or 0]).to(self.device))
       act_values_np = act_values.cpu().detach().numpy()
       if self.action_selection == 'softmax':
         # Softmax sampling
@@ -158,12 +161,14 @@ class Agent:
     if self.global_step % self.replay_every_n_steps != 0:
       return
     minibatch = random.sample(self.memory, self.batch_size)
-    all_state, all_action, all_reward, all_next_state, all_done = zip(
+    all_state, all_last_action, all_action, all_reward, all_next_state, all_done = zip(
         *minibatch)
 
     # Convert numpy arrays to tensors and move to device only here
     all_state = torch.tensor(np.stack(all_state),
                              dtype=torch.float).to(self.device)
+    all_last_action = torch.tensor(all_last_action,
+                                   dtype=torch.float).to(self.device)
     all_action = torch.tensor(all_action, dtype=torch.int64).to(self.device)
     all_reward = torch.tensor(all_reward, dtype=torch.float).to(self.device)
     all_next_state = torch.tensor(np.stack(all_next_state),
@@ -174,10 +179,12 @@ class Agent:
     all_done = torch.tensor(all_done, dtype=torch.bool).to(self.device)
 
     with torch.no_grad():
-      q_next, _ = torch.max(self.target_model(all_next_state), dim=1)
+      q_next, _ = torch.max(self.target_model(all_next_state,
+                                              all_action.view(-1, 1)),
+                            dim=1)
       target = all_reward + self.gamma * q_next * ~all_done
 
-    q_values = self.model(all_state)
+    q_values = self.model(all_state, all_last_action.view(-1, 1))
     q_pred = torch.gather(q_values, 1, all_action.view(-1, 1)).squeeze(1)
     loss = self.get_loss()(q_pred, target)
     self.summary_writer.add_scalar('Replay/Loss', loss, self.global_step)
@@ -210,6 +217,8 @@ class Agent:
 
   def episode_end(self, episode_info):
     # Episode statistics
+    self.summary_writer.add_scalar("Episode/Episode", episode_info['episode'],
+                                   self.global_step)
     self.summary_writer.add_scalar("Episode/Reward",
                                    episode_info['total_reward'],
                                    self.global_step)
