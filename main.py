@@ -8,8 +8,8 @@ import yaml
 import time
 import pickle
 import os
-from torch.utils.tensorboard import SummaryWriter  # <-- Add this import
 import cv2
+import shutil
 import numpy as np
 
 from src.agent import Agent
@@ -19,6 +19,12 @@ from src.render import render_mario_with_q_values
 def main(args):
   print(f"Using configuration file: {args.config}")
   config = yaml.safe_load(open(args.config, 'r'))
+  if args.restart:
+    try:
+      shutil.rmtree(f"checkpoint/{config['agent']['name']}")
+      shutil.rmtree(f"runs/tb_{config['agent']['name']}")
+    except FileNotFoundError:
+      pass
 
   env = gym.make(config['env']['env_name'])
   env = JoypadSpace(env, SIMPLE_MOVEMENT)
@@ -29,11 +35,7 @@ def main(args):
   agent = Agent(env.action_space.n, device, config['agent'])
   agent_performance = []
 
-  config_name = os.path.splitext(os.path.basename(args.config))[0]
-  log_dir = f"runs/tensorboard_logs_{config_name}"
-  writer = SummaryWriter(log_dir=log_dir)
-
-  for episode in range(config['env']['num_episodes']):
+  for episode in range(agent.episodes_trained, config['env']['num_episodes']):
     agent.episode_begin()
     state = env.reset()
     total_reward = 0
@@ -71,9 +73,6 @@ def main(args):
     }
     agent_performance.append(performance)
 
-    writer.add_scalar('Reward/Total', total_reward, episode)
-
-  writer.close()
   env.close()
   cv2.destroyAllWindows()
 
@@ -103,5 +102,10 @@ if __name__ == "__main__":
                       type=str,
                       default='config.yaml',
                       help='Path to the configuration file')
+  parser.add_argument(
+      '--restart',
+      type=bool,
+      default=False,
+      help='Whether to restart training and delete checkpoints if they exist.')
   args = parser.parse_args()
   main(args)

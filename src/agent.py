@@ -5,6 +5,7 @@ import torch.nn as nn
 import torch.optim as optim
 import math
 import os
+from torch.utils.tensorboard import SummaryWriter
 from src.dqn import DQN
 from src.state import State
 import pickle
@@ -27,7 +28,6 @@ class Agent:
 
     # Learning parameters.
     self.gamma = config['gamma']
-    self.epsilon = config['epsilon']
     self.epsilon_min = config['epsilon_min']
     self.epsilon_decay = config['epsilon_decay']
     self.learning_rate = config['learning_rate']
@@ -41,10 +41,19 @@ class Agent:
     if (not os.path.exists(self.checkpoint_path)
         or not os.path.exists(self.checkpoint_state_path)):
       self.episodes_trained = 0
+      self.global_step = 0
+      self.epsilon = config['epsilon']
     else:
       with open(self.checkpoint_state_path, "rb") as f:
         state = pickle.load(f)
         self.episodes_trained = state['episodes_trained']
+        self.global_step = state['global_step']
+        self.epsilon = state['epsilon']
+        print(
+            f'Resuming from checkpoint. Episode {self.episodes_trained}, global step {self.global_step}'
+        )
+    self.summary_writer = SummaryWriter(log_dir=f"runs/tb_{config['name']}",
+                                        purge_step=self.global_step)
 
     # Action selection parameters.
     self.action_selection = config.get('action_selection', 'max')
@@ -96,6 +105,7 @@ class Agent:
       act_values: The Q-values predicted by the model for the current state.
     """
     self.state.add(state)
+    self.global_step += 1
     if self.action_repeat_steps and self.last_action != None and self.last_action_repeated < self.action_repeat_steps:
       self.last_action_repeated += 1
       # Repeat the last action
@@ -145,10 +155,8 @@ class Agent:
   def replay(self):
     if len(self.memory) < self.batch_size:
       return
-    self.step = self.step + 1
-    if self.step % self.replay_every_n_steps != 0:
+    if self.global_step % self.replay_every_n_steps != 0:
       return
-
     minibatch = random.sample(self.memory, self.batch_size)
     all_state, all_action, all_reward, all_next_state, all_done = zip(
         *minibatch)
@@ -169,9 +177,13 @@ class Agent:
       q_next, _ = torch.max(self.target_model(all_next_state), dim=1)
       target = all_reward + self.gamma * q_next * ~all_done
 
-    q_pred = torch.gather(self.model(all_state), 1,
-                          all_action.view(-1, 1)).squeeze(1)
+    q_values = self.model(all_state)
+    q_pred = torch.gather(q_values, 1, all_action.view(-1, 1)).squeeze(1)
     loss = self.get_loss()(q_pred, target)
+    self.summary_writer.add_scalar('Loss', loss, self.global_step)
+    self.summary_writer.add_scalar('Q-mean', torch.mean(q_values.flatten()),
+                                   self.global_step)
+    self.summary_writer.add_scalar('Epsilon', self.epsilon, self.global_step)
 
     # Update target model every `target_update_frequency` steps
     self.replays_until_target_update -= 1
@@ -193,6 +205,13 @@ class Agent:
 
   def episode_end(self):
     # Checkpoint
+    self.episodes_trained += 1
     torch.save(self.model.state_dict(), self.checkpoint_path)
     with open(self.checkpoint_state_path, "wb") as f:
-      pickle.dump({'episodes_trained': self.episodes_trained}, f)
+      pickle.dump(
+          {
+              'episodes_trained': self.episodes_trained,
+              'global_step': self.global_step,
+              'epsilon': self.epsilon
+          }, f)
+    self.summary_writer.flush()
