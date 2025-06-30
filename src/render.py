@@ -2,7 +2,11 @@ import cv2
 import numpy as np
 
 
-def render_q_values_bar(q_values_norm, width=256, height=40, labels=None):
+def render_q_values_bar(q_values_norm,
+                        action,
+                        width=256,
+                        height=40,
+                        labels=None):
   n_actions = len(q_values_norm)
   bar_img = np.zeros((height + 16, width, 3),
                      dtype=np.uint8)  # Extra space for labels
@@ -13,6 +17,8 @@ def render_q_values_bar(q_values_norm, width=256, height=40, labels=None):
     y_start = height - bar_h
     # Color: red (low) to green (high)
     color = (0, int(255 * q), int(255 * (1 - q)))
+    if action == i:
+      color = (int(255), int(255), int(255))
     cv2.rectangle(bar_img, (i * bar_width, y_start),
                   ((i + 1) * bar_width - 2, height), color, -1)
     # Draw label if provided
@@ -34,7 +40,7 @@ def stack_frame_with_q_bar(frame, q_bar):
   return np.vstack((frame, q_bar))
 
 
-def render_mario_with_q_values(next_state, q_values, labels):
+def render_mario_with_q_values(next_state, q_values, action, labels):
   """
   Render the Mario frame with Q-values overlay.
   """
@@ -57,6 +63,7 @@ def render_mario_with_q_values(next_state, q_values, labels):
   # Normalize and render Q-values
   q_values_norm = (q_values - np.min(q_values)) / (np.ptp(q_values) + 1e-8)
   q_bar = render_q_values_bar(q_values_norm,
+                              action,
                               width=next_state_up.shape[1],
                               labels=labels)
   frame_with_q = stack_frame_with_q_bar(next_state_up, q_bar)

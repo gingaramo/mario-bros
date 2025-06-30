@@ -54,7 +54,7 @@ def main(args):
         reward += (score - last_score) / 100.0
       last_score = score
 
-      render_mario_with_q_values(next_state, q_values, SIMPLE_MOVEMENT)
+      render_mario_with_q_values(next_state, q_values, action, SIMPLE_MOVEMENT)
       agent.remember(action, reward, next_state, done)
       agent.replay()
       state = next_state

@@ -123,9 +123,9 @@ class Agent:
           torch.tensor([self.last_action or 0]).to(self.device))
       act_values_np = act_values.cpu().detach().numpy()
       if self.action_selection == 'softmax':
-        # Softmax sampling
-        exp_q = np.exp(act_values_np - np.max(act_values_np)
-                       ) / self.action_selection_temperature
+        # Softmax sampling with temperature
+        q = act_values_np / self.action_selection_temperature
+        exp_q = np.exp(q - np.max(q))
         probs = exp_q / np.sum(exp_q)
         action = np.random.choice(self.action_size, p=probs)
         act_values = probs
