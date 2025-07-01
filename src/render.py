@@ -69,3 +69,4 @@ def render_mario_with_q_values(next_state, q_values, action, labels):
   frame_with_q = stack_frame_with_q_bar(next_state_up, q_bar)
   cv2.imshow("Mario with Q-values", frame_with_q)
   cv2.waitKey(1)  # Allow OpenCV to update the display
+  return frame_with_q

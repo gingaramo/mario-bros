@@ -22,6 +22,7 @@ class Agent:
     self.replay_every_n_steps = config['replay_every_n_steps']
     self.memory_size = config['memory_size']
     self.memory = []
+    self.memory_error = []  # Remembers error of sample
     self.batch_size = config['batch_size']
     self.target_update_frequency = config.get('target_update_frequency')
     self.replays_until_target_update = self.target_update_frequency
@@ -60,8 +61,6 @@ class Agent:
     self.action_selection_temperature = config.get(
         'action_selection_temperature', 1.0)
     # Action repeat settings
-    self.last_action = None
-    self.last_action_repeated = 0
     self.action_repeat_steps = config.get('action_repeat_steps', None)
     self.step = 0
 
@@ -92,11 +91,17 @@ class Agent:
     """
     curr_state = self.state.current().cpu().detach().numpy()
     next_state = self.state.preprocess(next_state)
+    # Skip memories that are too similar
+    if len(self.memory) > 1 and math.fabs(self.memory[-1][3] - reward) < 0.1:
+      return
+    # Store memory with how bad we estimated
     self.memory.append(
         (curr_state, self.last_action, action, reward, next_state, done))
+    self.memory_error.append(math.fabs(self.last_q_values[action] - reward))
     if len(self.memory) > self.memory_size:
-      # TODO: Implement a more sophisticated memory management strategy
-      self.memory.pop(random.randint(0, len(self.memory) - 1))
+      to_remove = random.randint(0, len(self.memory) - 1)
+      self.memory.pop(to_remove)
+      self.memory_error.pop(to_remove)
 
   def act(self, state: np.ndarray) -> tuple[int, np.ndarray]:
     """Returns the action to take based on the current state.
@@ -110,35 +115,37 @@ class Agent:
     if self.action_repeat_steps and self.last_action != None and self.last_action_repeated < self.action_repeat_steps:
       self.last_action_repeated += 1
       # Repeat the last action
-      return self.last_action, self.last_q_values
+      return self.last_action, self.last_act_values
     self.last_action_repeated = 0
 
     action = None
+    q_values = self.model(
+        self.state.current().to(self.device),
+        torch.tensor([self.last_action or 0]).to(self.device))
+    q_values_np = q_values.cpu().detach().numpy()
+    # "Act values" are q values for most cases but for softmax.
+    act_values = q_values_np
+
     if np.random.rand() <= self.epsilon:
       action = random.randrange(self.action_size)
-      act_values = np.zeros((self.action_size, ))
     else:
-      act_values = self.model(
-          self.state.current().to(self.device),
-          torch.tensor([self.last_action or 0]).to(self.device))
-      act_values_np = act_values.cpu().detach().numpy()
       if self.action_selection == 'softmax':
         # Softmax sampling with temperature
-        q = act_values_np / self.action_selection_temperature
+        q = q_values_np / self.action_selection_temperature
         exp_q = np.exp(q - np.max(q))
         probs = exp_q / np.sum(exp_q)
         action = np.random.choice(self.action_size, p=probs)
         act_values = probs
       elif self.action_selection == 'max':
         # Greedy action selection
-        action = torch.argmax(act_values).item()
-        act_values = act_values_np
+        action = torch.argmax(q_values).item()
       else:
         raise ValueError(
             f"Unsupported action selection method: {self.action_selection}. Supported: 'softmax', 'max'."
         )
     self.last_action = action
-    self.last_q_values = act_values
+    self.last_q_values = q_values
+    self.last_act_values = act_values
     return action, act_values
 
   def get_loss(self):
@@ -160,7 +167,12 @@ class Agent:
       return
     if self.global_step % self.replay_every_n_steps != 0:
       return
-    minibatch = random.sample(self.memory, self.batch_size)
+    # Gather ids to fix memory_error later on
+    minibatch_ids = random.choices(range(len(self.memory)),
+                                   weights=self.memory_error,
+                                   k=self.batch_size)
+    # Gather memories from self.memory using indices in minibatch_ids
+    minibatch = [self.memory[i] for i in minibatch_ids]
     all_state, all_last_action, all_action, all_reward, all_next_state, all_done = zip(
         *minibatch)
 
@@ -186,7 +198,11 @@ class Agent:
 
     q_values = self.model(all_state, all_last_action.view(-1, 1))
     q_pred = torch.gather(q_values, 1, all_action.view(-1, 1)).squeeze(1)
+    new_memory_error = (q_pred.flatten().cpu().detach().numpy() -
+                        target.flatten().cpu().detach().numpy())
     loss = self.get_loss()(q_pred, target)
+    self.summary_writer.add_scalar('Replay/Memory', len(self.memory),
+                                   self.global_step)
     self.summary_writer.add_scalar('Replay/Loss', loss, self.global_step)
     self.summary_writer.add_scalar('Replay/Q-mean',
                                    torch.mean(q_values.flatten()),
@@ -208,12 +224,16 @@ class Agent:
     self.clip_gradients()
     self.optimizer.step()
 
+    # Update memory error with new memory error
+    for idx, err in zip(minibatch_ids, np.abs(new_memory_error)):
+      self.memory_error[idx] = err
+
     if self.epsilon > self.epsilon_min:
       self.epsilon *= self.epsilon_decay
 
   def episode_begin(self):
-    # Nothing for now
-    pass
+    self.last_action = None
+    self.last_action_repeated = 0
 
   def episode_end(self, episode_info):
     # Episode statistics

@@ -13,19 +13,24 @@ import shutil
 import numpy as np
 
 from src.agent import Agent
+from src.recording import Recording
 from src.render import render_mario_with_q_values
+
+
+def clear_checkpoints():
+  try:
+    shutil.rmtree(f"checkpoint/{config['agent']['name']}")
+    shutil.rmtree(f"runs/tb_{config['agent']['name']}")
+  except FileNotFoundError:
+    print("Failed to delete files")
+    pass
 
 
 def main(args):
   print(f"Using configuration file: {args.config}")
   config = yaml.safe_load(open(args.config, 'r'))
   if args.restart:
-    try:
-      shutil.rmtree(f"checkpoint/{config['agent']['name']}")
-      shutil.rmtree(f"runs/tb_{config['agent']['name']}")
-    except FileNotFoundError:
-      print("Failed to delete files")
-      pass
+    clear_checkpoints()
 
   env = gym.make(config['env']['env_name'])
   env = JoypadSpace(env, SIMPLE_MOVEMENT)
@@ -33,10 +38,10 @@ def main(args):
   device = torch.device(config['device'])
   print(f"Using device: {device}")
 
+  recording = None
   agent = Agent(env.action_space.n, device, config['agent'])
-  agent_performance = []
-
-  for episode in range(agent.episodes_trained, config['env']['num_episodes']):
+  episodes = range(agent.episodes_trained, config['env']['num_episodes'])
+  for episode in episodes:
     agent.episode_begin()
     state = env.reset()
     total_reward = 0
@@ -54,14 +59,25 @@ def main(args):
         reward += (score - last_score) / 100.0
       last_score = score
 
-      render_mario_with_q_values(next_state, q_values, action, SIMPLE_MOVEMENT)
-      agent.remember(action, reward, next_state, done)
-      agent.replay()
+      frame = render_mario_with_q_values(next_state, q_values, action,
+                                         SIMPLE_MOVEMENT)
+      if args.record_play:
+        recording = Recording(f"{config['agent']['name']}_{episode}",
+                              frame_size=(512, 536))
+        recording.add_frame(frame)
+      else:
+        # only remember and replay if we're not recording
+        agent.remember(action, reward, next_state, done)
+        agent.replay()
+
       state = next_state
       total_reward += reward
       if done:
         break
 
+    if args.record_play:
+      recording.save()
+      recording = None
     episode_info = {
         'episode': episode,
         'total_reward': total_reward,
@@ -84,6 +100,9 @@ if __name__ == "__main__":
                       type=str,
                       default='config.yaml',
                       help='Path to the configuration file')
+  parser.add_argument('--record_play',
+                      action='store_true',
+                      help='If true, we\'ll record an episode and end.')
   parser.add_argument(
       '--restart',
       type=bool,
