@@ -63,6 +63,8 @@ class Agent:
     # Action repeat settings
     self.action_repeat_steps = config.get('action_repeat_steps', None)
     self.step = 0
+    # Episode being recorded? Helps avoid state updates and checkpoints
+    self.recording = False
 
     self.state = State(self.device, config['state'])
     if 'dqn' in config['network']:
@@ -111,7 +113,9 @@ class Agent:
       act_values: The Q-values predicted by the model for the current state.
     """
     self.state.add(state)
-    self.global_step += 1
+    if not self.recording:
+      # We only update global step when we're training, not recording.
+      self.global_step += 1
     if self.action_repeat_steps and self.last_action != None and self.last_action_repeated < self.action_repeat_steps:
       self.last_action_repeated += 1
       # Repeat the last action
@@ -163,6 +167,8 @@ class Agent:
                                self.config['clip_gradients'])
 
   def replay(self):
+    if self.recording:
+      return
     if len(self.memory) < self.batch_size:
       return
     if self.global_step % self.replay_every_n_steps != 0:
@@ -231,11 +237,14 @@ class Agent:
     if self.epsilon > self.epsilon_min:
       self.epsilon *= self.epsilon_decay
 
-  def episode_begin(self):
+  def episode_begin(self, recording=False):
     self.last_action = None
     self.last_action_repeated = 0
+    self.recording = recording
 
   def episode_end(self, episode_info):
+    if self.recording:
+      return
     # Episode statistics
     self.summary_writer.add_scalar("Episode/Episode", episode_info['episode'],
                                    self.global_step)

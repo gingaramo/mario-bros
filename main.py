@@ -40,9 +40,15 @@ def main(args):
 
   recording = None
   agent = Agent(env.action_space.n, device, config['agent'])
-  episodes = range(agent.episodes_trained, config['env']['num_episodes'])
+  if args.record_play:
+    episodes = [agent.episodes_trained]
+  else:
+    episodes = range(agent.episodes_trained, config['env']['num_episodes'])
   for episode in episodes:
-    agent.episode_begin()
+    if args.record_play:
+      recording = Recording(f"{config['agent']['name']}_{episode}",
+                            frame_size=(512, 536))
+    agent.episode_begin(recording=args.record_play)
     state = env.reset()
     total_reward = 0
     done = False
@@ -61,21 +67,17 @@ def main(args):
 
       frame = render_mario_with_q_values(next_state, q_values, action,
                                          SIMPLE_MOVEMENT)
-      if args.record_play:
-        recording = Recording(f"{config['agent']['name']}_{episode}",
-                              frame_size=(512, 536))
+      if recording:
         recording.add_frame(frame)
-      else:
-        # only remember and replay if we're not recording
-        agent.remember(action, reward, next_state, done)
-        agent.replay()
+      agent.remember(action, reward, next_state, done)
+      agent.replay()
 
       state = next_state
       total_reward += reward
       if done:
         break
 
-    if args.record_play:
+    if recording:
       recording.save()
       recording = None
     episode_info = {
