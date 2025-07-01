@@ -1,0 +1,44 @@
+# basic configuration for a reinforcement learning agent
+# that mirrors Playing Atari with Deep Reinforcement Learning
+
+# Environment parameters
+env:
+  env_name: SuperMarioBros-v0
+  use_score: true
+  max_steps_per_episode: 3000
+  render: true
+  num_episodes: 1000
+
+# Device configuration
+device: cpu
+
+agent:
+  name: experiment_1_random
+
+  # Learning parameters
+  gamma: 0.99
+  epsilon: 1.0
+  epsilon_min: 1.0
+  epsilon_decay: 1.0       # maintain randomness
+  learning_rate: 1.0
+  batch_size: 4            # this causes no training
+  memory_size: 1           # no need -- no training
+  loss: mse              # no need -- no training
+  clip_gradients: 0        # no need -- no training
+  optimizer: adam        # no need -- no training
+  action_selection: max
+  
+  # Action parameters
+  action_repeat_steps: 4
+  replay_every_n_steps: 1000000     # no need -- no training
+  target_update_frequency: 1000000  # no need -- no training
+
+  state:
+    resize_shape: [128, 128]
+    grayscale: false # no need -- no training
+    normalize: false # no need -- no training
+    stack_frames: 1  # no need -- no training
+
+  network:
+    dqn:
+      hidden_layers: [256, 128] # Hidden layers for the neural network
