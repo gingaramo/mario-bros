@@ -93,6 +93,10 @@ class Agent:
     """
     curr_state = self.state.current().cpu().detach().numpy()
     next_state = self.state.preprocess(next_state)
+    self.summary_writer.add_scalar('Memory/Size', len(self.memory),
+                                   self.global_step)
+    self.summary_writer.add_scalar('Memory/Reward', reward, self.global_step)
+
     # Skip memories that are too similar
     if len(self.memory) > 1 and math.fabs(self.memory[-1][3] - reward) < 0.1:
       return
@@ -100,6 +104,9 @@ class Agent:
     self.memory.append(
         (curr_state, self.last_action, action, reward, next_state, done))
     self.memory_error.append(math.fabs(self.last_q_values[action] - reward))
+    self.summary_writer.add_scalar('Memory/Estimation Error',
+                                   self.memory_error[-1], self.global_step)
+
     if len(self.memory) > self.memory_size:
       to_remove = random.randint(0, len(self.memory) - 1)
       self.memory.pop(to_remove)
@@ -207,8 +214,6 @@ class Agent:
     new_memory_error = (q_pred.flatten().cpu().detach().numpy() -
                         target.flatten().cpu().detach().numpy())
     loss = self.get_loss()(q_pred, target)
-    self.summary_writer.add_scalar('Replay/Memory', len(self.memory),
-                                   self.global_step)
     self.summary_writer.add_scalar('Replay/Loss', loss, self.global_step)
     self.summary_writer.add_scalar('Replay/Q-mean',
                                    torch.mean(q_values.flatten()),
