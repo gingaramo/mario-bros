@@ -121,16 +121,15 @@ class Agent:
 
     q_estimate = reward + self.gamma * torch.argmax(
         self.target_model(
-            torch.tensor(
-                np.concatenate(
-                    (curr_state[1:], [next_state]), axis=0,
-                    dtype=np.float32)).to(self.device),
-            torch.tensor([action]).to(self.device))).item() * (not done)
+            torch.tensor(np.concatenate(
+                (curr_state[1:], [next_state]), axis=0, dtype=np.float32),
+                         device=self.device),
+            torch.tensor([action], device=self.device))).item() * (not done)
 
     # Prioritize learning from bad more than good experiences.
-    if self.memory_selection == "uniform":
+    if self.memory_selection == 'uniform':
       self.memory_error.append(1.0)
-    if self.memory_selection == "prioritized":
+    elif self.memory_selection == 'prioritized':
       self.memory_error.append(
           td_error(self.last_q_values[action],
                    q_estimate)**self.memory_selection_alpha)
@@ -164,7 +163,7 @@ class Agent:
     action = None
     q_values = self.model(
         self.state.current().to(self.device),
-        torch.tensor([self.last_action or 0]).to(self.device))
+        torch.tensor([self.last_action or 0], device=self.device))
     q_values_np = q_values.cpu().detach().numpy()
     # "Act values" are q values for most cases but for softmax.
     act_values = q_values_np
@@ -217,8 +216,8 @@ class Agent:
       wis_weights = (td_errors.sum() /
                      (td_errors * N_))**self.memory_selection_beta
       wis_weights_max = wis_weights.max()
-      wis_weights = torch.tensor(wis_weights[minibatch_ids] /
-                                 wis_weights_max).to(self.device)
+      wis_weights = torch.tensor(wis_weights[minibatch_ids] / wis_weights_max,
+                                 device=self.device)
     # Gather memories from self.memory using indices in minibatch_ids
     minibatch = [self.memory[i] for i in minibatch_ids]
     all_state, all_last_action, all_action, all_reward, all_next_state, all_done = zip(
@@ -226,17 +225,23 @@ class Agent:
 
     # Convert numpy arrays to tensors and move to device only here
     all_state = torch.tensor(np.stack(all_state),
-                             dtype=torch.float).to(self.device)
+                             dtype=torch.float,
+                             device=self.device)
     all_last_action = torch.tensor(all_last_action,
-                                   dtype=torch.float).to(self.device)
-    all_action = torch.tensor(all_action, dtype=torch.int64).to(self.device)
-    all_reward = torch.tensor(all_reward, dtype=torch.float).to(self.device)
+                                   dtype=torch.float,
+                                   device=self.device)
+    all_action = torch.tensor(all_action,
+                              dtype=torch.int64,
+                              device=self.device)
+    all_reward = torch.tensor(all_reward,
+                              dtype=torch.float,
+                              device=self.device)
     all_next_state = torch.tensor(np.stack(all_next_state),
                                   dtype=torch.float).to(
                                       self.device).unsqueeze(1)
     all_next_state = torch.concat([all_state[:, 1:, :], all_next_state],
                                   axis=1)
-    all_done = torch.tensor(all_done, dtype=torch.bool).to(self.device)
+    all_done = torch.tensor(all_done, dtype=torch.bool, device=self.device)
 
     with torch.no_grad():
       q_next, _ = torch.max(self.target_model(all_next_state,
@@ -257,7 +262,7 @@ class Agent:
         self.memory_error[idx] = err
       per_experience_loss = self.get_loss(reduction='none')(q_pred, target)
       loss = torch.mean(per_experience_loss * wis_weights)
-    elif self.memory_selection == 'random':
+    elif self.memory_selection == 'uniform':
       loss = self.get_loss()(q_pred, target)
 
     # Update target model every `target_update_frequency` steps
