@@ -243,9 +243,12 @@ class Agent:
     all_done = torch.tensor(all_done, dtype=torch.bool, device=self.device)
 
     with torch.no_grad():
-      q_next, _ = torch.max(self.target_model(all_next_state,
-                                              all_action.view(-1, 1)),
-                            dim=1)
+      # Double DQN is the next line:
+      idx = torch.argmax(self.model(all_next_state, all_action.view(-1, 1)),
+                         dim=1)
+      q_next = torch.gather(
+          self.target_model(all_next_state, all_action.view(-1, 1)), 1,
+          idx.view(-1, 1)).squeeze(1)
       target = all_reward + self.gamma * q_next * (~all_done)
 
     q_values = self.model(all_state, all_last_action.view(-1, 1))
