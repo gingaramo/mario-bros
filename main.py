@@ -1,5 +1,5 @@
 import argparse
-import gymnasium
+import gymnasium as gym
 import gym_super_mario_bros  # Keep (environment registration)
 from nes_py.wrappers import JoypadSpace
 from gym_super_mario_bros.actions import SIMPLE_MOVEMENT
@@ -14,7 +14,11 @@ import numpy as np
 
 from src.agent import Agent
 from src.recording import Recording
-from src.render import render_mario_with_q_values
+from src.render import render_with_q_values
+
+import ale_py
+
+gym.register_envs(ale_py)
 
 
 def clear_checkpoints(config):
@@ -32,8 +36,14 @@ def main(args):
   if args.restart:
     clear_checkpoints(config)
 
-  env = gymnasium.make(config['env']['env_name'])
-  env = JoypadSpace(env, SIMPLE_MOVEMENT)
+  env = gym.make(config['env']['env_name'])
+  if 'SuperMario' in config['env']['env_name']:
+    # We only apply this for Mario. Other environments are likely just Atari
+    # and thus don't need this.
+    env = JoypadSpace(env, SIMPLE_MOVEMENT)
+    action_labels = SIMPLE_MOVEMENT
+  else:
+    action_labels = config['env']['env_action_labels']
 
   device = torch.device(config['device'])
   print(f"Using device: {device}")
@@ -57,7 +67,10 @@ def main(args):
     for timestep in range(config['env']['max_steps_per_episode']):
       action, q_values = agent.act(state)
       next_state, reward, done, truncated, info = env.step(action)
-      world, stage, score = info['world'], info['stage'], info['score']
+      if 'SuperMario' in config['env']['env_name']:
+        world, stage, score = info['world'], info['stage'], info['score']
+      else:
+        world, stage, score = (0, 0, 0)
       done = done or truncated
 
       # Amend reward with score change if configured.
@@ -66,8 +79,7 @@ def main(args):
         reward += (score - last_score) / 100.0
       last_score = score
 
-      frame = render_mario_with_q_values(next_state, q_values, action,
-                                         SIMPLE_MOVEMENT)
+      frame = render_with_q_values(next_state, q_values, action, action_labels)
       if recording:
         recording.add_frame(frame)
       agent.remember(action, reward, next_state, done)
@@ -108,8 +120,7 @@ if __name__ == "__main__":
                       help='If true, we\'ll record an episode and end.')
   parser.add_argument(
       '--restart',
-      type=bool,
-      default=False,
+      action='store_true',
       help='Whether to restart training and delete checkpoints if they exist.')
   args = parser.parse_args()
   main(args)

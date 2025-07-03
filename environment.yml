@@ -13,6 +13,7 @@ dependencies:
     - pandas==2.2.3
     - pynput
     - gymnasium
+    - ale-py
     # Use 'editable' install option
     - -e git+https://github.com/Kautenja/nes-py.git@refs/pull/94/head#egg=nes-py
     - -e git+https://github.com/Kautenja/gym-super-mario-bros.git@refs/pull/127/head#egg=gym-super-mario-bros

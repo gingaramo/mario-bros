@@ -40,9 +40,9 @@ def stack_frame_with_q_bar(frame, q_bar):
   return np.vstack((frame, q_bar))
 
 
-def render_mario_with_q_values(next_state, q_values, action, labels):
+def render_with_q_values(next_state, q_values, action, labels):
   """
-  Render the Mario frame with Q-values overlay.
+  Render the frame with Q-values overlay.
   """
   # Convert next_state from RGB to BGR for correct OpenCV display
   next_state_bgr = cv2.cvtColor(next_state, cv2.COLOR_RGB2BGR)
@@ -67,6 +67,6 @@ def render_mario_with_q_values(next_state, q_values, action, labels):
                               width=next_state_up.shape[1],
                               labels=labels)
   frame_with_q = stack_frame_with_q_bar(next_state_up, q_bar)
-  cv2.imshow("Mario with Q-values", frame_with_q)
+  cv2.imshow("Frame with Q-values", frame_with_q)
   cv2.waitKey(1)  # Allow OpenCV to update the display
   return frame_with_q

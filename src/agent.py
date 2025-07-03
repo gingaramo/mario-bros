@@ -33,7 +33,7 @@ class Agent:
                                                   1.0)
     self.memory_selection_beta = self.config.get('memory_selection_beta', 1.0)
     self.batch_size = config['batch_size']
-    self.target_update_frequency = config.get('target_update_frequency')
+    self.target_update_frequency = config.get('target_update_frequency', 0)
     self.replays_until_target_update = self.target_update_frequency
 
     # Learning parameters.
@@ -112,9 +112,6 @@ class Agent:
                                    self.global_step)
     self.summary_writer.add_scalar('Memory/Reward', reward, self.global_step)
 
-    # Skip memories that are too similar
-    if len(self.memory) > 1 and math.fabs(self.memory[-1][3] - reward) < 0.1:
-      return
     # Store TD-error for memory
     self.memory.append(
         (curr_state, self.last_action, action, reward, next_state, done))
@@ -191,7 +188,7 @@ class Agent:
     return action, act_values
 
   def clip_gradients(self):
-    if self.config['clip_gradients'] is not None:
+    if 'clip_gradients' in self.config:
       return nn.utils.clip_grad_norm_(self.model.parameters(),
                                       self.config['clip_gradients'])
     return torch.nn.utils.clip_grad_norm_(self.model.parameters(),
@@ -201,6 +198,8 @@ class Agent:
     if self.recording:
       return
     if len(self.memory) < self.batch_size:
+      return
+    if len(self.memory) < self.config.get('min_memory_size', 0):
       return
     if self.global_step % self.replay_every_n_steps != 0:
       return
@@ -286,8 +285,8 @@ class Agent:
         "Replay/PreClipParamNorm",
         torch.nn.utils.get_total_norm(self.model.parameters()),
         self.global_step)
-    self.summary_writer.add_scalar("Replay/GradNorm", pre_clip_grad_norm,
-                                   self.global_step)
+    self.summary_writer.add_scalar("Replay/PreClipGradNorm",
+                                   pre_clip_grad_norm, self.global_step)
 
   def episode_begin(self, recording=False):
     self.last_action = None

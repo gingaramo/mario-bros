@@ -23,6 +23,7 @@ agent:
   learning_rate: 1.0
   batch_size: 4            # this causes no training
   memory_size: 1           # no need -- no training
+  memory_selection: uniform # no need -- no training
   loss: mse              # no need -- no training
   clip_gradients: 0        # no need -- no training
   optimizer: adam        # no need -- no training
