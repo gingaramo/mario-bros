@@ -35,8 +35,8 @@ agent:
 
   state:
     resize_shape: [128, 128]
-    grayscale: false # no need -- no training
-    normalize: false # no need -- no training
+    grayscale: true
+    normalize: true
     stack_frames: 1  # no need -- no training
 
   network:

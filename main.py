@@ -17,7 +17,7 @@ from src.recording import Recording
 from src.render import render_mario_with_q_values
 
 
-def clear_checkpoints():
+def clear_checkpoints(config):
   try:
     shutil.rmtree(f"checkpoint/{config['agent']['name']}")
     shutil.rmtree(f"runs/tb_{config['agent']['name']}")
@@ -30,7 +30,7 @@ def main(args):
   print(f"Using configuration file: {args.config}")
   config = yaml.safe_load(open(args.config, 'r'))
   if args.restart:
-    clear_checkpoints()
+    clear_checkpoints(config)
 
   env = gym.make(config['env']['env_name'])
   env = JoypadSpace(env, SIMPLE_MOVEMENT)

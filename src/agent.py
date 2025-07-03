@@ -11,6 +11,12 @@ from src.state import State
 import pickle
 
 
+def td_error(q_value: float, reward: float):
+  error_multiplier = 0.5 if reward > 0 else 1.0  # prefers bad experiences
+  error_epsilon = 1e-2  # ensures sampling for all (even zero error) experiences
+  return math.fabs(q_value - reward) * error_multiplier
+
+
 class Agent:
 
   def __init__(self, action_size, device, config):
@@ -23,6 +29,10 @@ class Agent:
     self.memory_size = config['memory_size']
     self.memory = []
     self.memory_error = []  # Remembers error of sample
+    self.memory_selection = self.config['memory_selection']
+    self.memory_selection_alpha = self.config.get('memory_selection_alpha',
+                                                  1.0)
+    self.memory_selection_beta = self.config.get('memory_selection_beta', 1.0)
     self.batch_size = config['batch_size']
     self.target_update_frequency = config.get('target_update_frequency')
     self.replays_until_target_update = self.target_update_frequency
@@ -32,6 +42,12 @@ class Agent:
     self.epsilon_min = config['epsilon_min']
     self.epsilon_decay = config['epsilon_decay']
     self.learning_rate = config['learning_rate']
+    if self.config['loss'] == 'mse':
+      self.get_loss = nn.MSELoss
+    elif self.config['loss'] == 'smooth_l1':
+      self.get_loss = nn.SmoothL1Loss
+    else:
+      raise ValueError(f"Unsupported loss function: {self.config['loss']}")
 
     # Checkpoint functionality
     _path = os.path.join("checkpoint/", config['name'])
@@ -100,10 +116,27 @@ class Agent:
     # Skip memories that are too similar
     if len(self.memory) > 1 and math.fabs(self.memory[-1][3] - reward) < 0.1:
       return
-    # Store memory with how bad we estimated
+    # Store TD-error for memory
     self.memory.append(
         (curr_state, self.last_action, action, reward, next_state, done))
-    self.memory_error.append(math.fabs(self.last_q_values[action] - reward))
+
+    q_estimate = reward + self.gamma * torch.argmax(
+        self.target_model(
+            torch.tensor(
+                np.concatenate(
+                    (curr_state[1:], [next_state]), axis=0,
+                    dtype=np.float32)).to(self.device),
+            torch.tensor([action]).to(self.device))).item() * (not done)
+
+    # Prioritize learning from bad more than good experiences.
+    if self.memory_selection == "uniform":
+      self.memory_error.append(1.0)
+    if self.memory_selection == "prioritized":
+      self.memory_error.append(
+          td_error(self.last_q_values[action],
+                   q_estimate)**self.memory_selection_alpha)
+    else:
+      raise ValueError(f"Invalid memory_selection {self.memory_selection}")
     self.summary_writer.add_scalar('Memory/Estimation Error',
                                    self.memory_error[-1], self.global_step)
 
@@ -159,15 +192,6 @@ class Agent:
     self.last_act_values = act_values
     return action, act_values
 
-  def get_loss(self):
-    if self.config['loss'] == 'mse':
-      self.get_loss = nn.MSELoss
-    elif self.config['loss'] == 'smooth_l1':
-      self.get_loss = nn.SmoothL1Loss
-    else:
-      raise ValueError(f"Unsupported loss function: {self.config['loss']}")
-    return self.get_loss()
-
   def clip_gradients(self):
     if self.config['clip_gradients'] is not None:
       nn.utils.clip_grad_norm_(self.model.parameters(),
@@ -184,6 +208,16 @@ class Agent:
     minibatch_ids = random.choices(range(len(self.memory)),
                                    weights=self.memory_error,
                                    k=self.batch_size)
+    if self.memory_selection == 'prioritized':
+      # Compute importance sampling weights, ensuring we scale by the maximum value
+      # to ensure weights correct gradient updates downwards.
+      N_ = float(len(self.memory))
+      td_errors = np.array(self.memory_error, dtype=np.float32)
+      wis_weights = (td_errors.sum() /
+                     (td_errors * N_))**self.memory_selection_beta
+      wis_weights_max = wis_weights.max()
+      wis_weights = torch.tensor(wis_weights[minibatch_ids] /
+                                 wis_weights_max).to(self.device)
     # Gather memories from self.memory using indices in minibatch_ids
     minibatch = [self.memory[i] for i in minibatch_ids]
     all_state, all_last_action, all_action, all_reward, all_next_state, all_done = zip(
@@ -207,13 +241,23 @@ class Agent:
       q_next, _ = torch.max(self.target_model(all_next_state,
                                               all_action.view(-1, 1)),
                             dim=1)
-      target = all_reward + self.gamma * q_next * ~all_done
+      target = all_reward + self.gamma * q_next * (~all_done)
 
     q_values = self.model(all_state, all_last_action.view(-1, 1))
     q_pred = torch.gather(q_values, 1, all_action.view(-1, 1)).squeeze(1)
-    new_memory_error = (q_pred.flatten().cpu().detach().numpy() -
-                        target.flatten().cpu().detach().numpy())
-    loss = self.get_loss()(q_pred, target)
+    if self.memory_selection == 'prioritized':
+      # Update memory error with new memory error
+      new_memory_error = [
+          td_error(p, t)**self.memory_selection_alpha
+          for p, t in zip(q_pred.flatten().cpu().detach().numpy(),
+                          target.flatten().cpu().detach().numpy())
+      ]
+      for idx, err in zip(minibatch_ids, np.abs(new_memory_error)):
+        self.memory_error[idx] = err
+      per_experience_loss = self.get_loss(reduction='none')(q_pred, target)
+      loss = torch.mean(per_experience_loss * wis_weights)
+    elif self.memory_selection == 'random':
+      loss = self.get_loss()(q_pred, target)
     self.summary_writer.add_scalar('Replay/Loss', loss, self.global_step)
     self.summary_writer.add_scalar('Replay/Q-mean',
                                    torch.mean(q_values.flatten()),
@@ -234,10 +278,6 @@ class Agent:
         self.global_step)
     self.clip_gradients()
     self.optimizer.step()
-
-    # Update memory error with new memory error
-    for idx, err in zip(minibatch_ids, np.abs(new_memory_error)):
-      self.memory_error[idx] = err
 
     if self.epsilon > self.epsilon_min:
       self.epsilon *= self.epsilon_decay

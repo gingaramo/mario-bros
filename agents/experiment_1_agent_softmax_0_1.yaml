@@ -13,7 +13,7 @@ env:
 device: mps
 
 agent:
-  name: experiment_1_agent_softmax_0_2
+  name: experiment_1_agent_softmax_0_1
 
   # Learning parameters
   gamma: 0.99
@@ -22,7 +22,8 @@ agent:
   epsilon_decay: 0.9995
   learning_rate: 0.0001
   batch_size: 64
-  memory_size: 1000000
+  memory_size: 50000
+  memory_selection: uniform
   loss: smooth_l1
   clip_gradients: 0.15
   optimizer: adam
