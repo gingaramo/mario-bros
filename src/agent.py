@@ -12,9 +12,8 @@ import pickle
 
 
 def td_error(q_value: float, reward: float):
-  error_multiplier = 0.5 if reward > 0 else 1.0  # prefers bad experiences
   error_epsilon = 1e-2  # ensures sampling for all (even zero error) experiences
-  return math.fabs(q_value - reward) * error_multiplier
+  return math.fabs(q_value - reward) + error_epsilon
 
 
 class Agent:
@@ -194,8 +193,10 @@ class Agent:
 
   def clip_gradients(self):
     if self.config['clip_gradients'] is not None:
-      nn.utils.clip_grad_norm_(self.model.parameters(),
-                               self.config['clip_gradients'])
+      return nn.utils.clip_grad_norm_(self.model.parameters(),
+                                      self.config['clip_gradients'])
+    return torch.nn.utils.clip_grad_norm_(self.model.parameters(),
+                                          float('inf'))
 
   def replay(self):
     if self.recording:
@@ -258,12 +259,6 @@ class Agent:
       loss = torch.mean(per_experience_loss * wis_weights)
     elif self.memory_selection == 'random':
       loss = self.get_loss()(q_pred, target)
-    self.summary_writer.add_scalar('Replay/Loss', loss, self.global_step)
-    self.summary_writer.add_scalar('Replay/Q-mean',
-                                   torch.mean(q_values.flatten()),
-                                   self.global_step)
-    self.summary_writer.add_scalar('Replay/Epsilon', self.epsilon,
-                                   self.global_step)
 
     # Update target model every `target_update_frequency` steps
     self.replays_until_target_update -= 1
@@ -273,14 +268,21 @@ class Agent:
 
     self.optimizer.zero_grad()
     loss.backward()
-    self.summary_writer.add_scalar(
-        "Replay/Norm", torch.nn.utils.get_total_norm(self.model.parameters()),
-        self.global_step)
-    self.clip_gradients()
+    pre_clip_grad_norm = self.clip_gradients()
     self.optimizer.step()
 
-    if self.epsilon > self.epsilon_min:
-      self.epsilon *= self.epsilon_decay
+    self.summary_writer.add_scalar('Replay/Loss', loss, self.global_step)
+    self.summary_writer.add_scalar('Replay/Q-mean',
+                                   torch.mean(q_values.flatten()),
+                                   self.global_step)
+    self.summary_writer.add_scalar('Replay/Epsilon', self.epsilon,
+                                   self.global_step)
+    self.summary_writer.add_scalar(
+        "Replay/PreClipParamNorm",
+        torch.nn.utils.get_total_norm(self.model.parameters()),
+        self.global_step)
+    self.summary_writer.add_scalar("Replay/GradNorm", pre_clip_grad_norm,
+                                   self.global_step)
 
   def episode_begin(self, recording=False):
     self.last_action = None
@@ -302,6 +304,10 @@ class Agent:
                                    self.global_step)
     self.summary_writer.add_scalar("Episode/Steps", episode_info['steps'],
                                    self.global_step)
+
+    # Update epsilon
+    if self.epsilon > self.epsilon_min:
+      self.epsilon *= self.epsilon_decay
 
     # Checkpoint
     self.episodes_trained += 1
