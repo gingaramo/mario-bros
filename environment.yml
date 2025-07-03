@@ -11,10 +11,11 @@ dependencies:
   - pip:
     - numpy==1.24.4
     - pandas==2.2.3
-    - gym==0.23.1
     - pynput
-    - gym-super-mario-bros
-    - nes_py==8.2.1
+    - gymnasium
+    # Use 'editable' install option
+    - -e git+https://github.com/Kautenja/nes-py.git@refs/pull/94/head#egg=nes-py
+    - -e git+https://github.com/Kautenja/gym-super-mario-bros.git@refs/pull/127/head#egg=gym-super-mario-bros
     - keyboard
     - opencv-python==4.11.0.86
     - "--find-links https://download.pytorch.org/whl/torch/"

@@ -1,0 +1,22 @@
+diff --git a/gym_super_mario_bros/smb_env.py b/gym_super_mario_bros/smb_env.py
+index 95c1492..5caef1d 100644
+--- a/gym_super_mario_bros/smb_env.py
++++ b/gym_super_mario_bros/smb_env.py
+@@ -366,7 +366,7 @@ class SuperMarioBrosEnv(NESEnv):
+         self._time_last = self._time
+         self._x_position_last = self._x_position
+ 
+-    def _did_step(self, done):
++    def _did_step(self, done, truncated):
+         """
+         Handle any RAM hacking after a step occurs.
+ 
+@@ -378,7 +378,7 @@ class SuperMarioBrosEnv(NESEnv):
+ 
+         """
+         # if done flag is set a reset is incoming anyway, ignore any hacking
+-        if done:
++        if done or truncated:
+             return
+         # if mario is dying, then cut to the chase and kill hi,
+         if self._is_dying:
