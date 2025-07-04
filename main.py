@@ -14,7 +14,7 @@ import numpy as np
 
 from src.agent import Agent
 from src.recording import Recording
-from src.render import render_with_q_values
+from src.render import render
 
 import ale_py
 
@@ -56,8 +56,7 @@ def main(args):
     episodes = range(agent.episodes_trained, config['env']['num_episodes'])
   for episode in episodes:
     if args.record_play:
-      recording = Recording(f"{config['agent']['name']}_{episode}",
-                            frame_size=(512, 536))
+      recording = Recording(f"{config['agent']['name']}_{episode}")
     agent.episode_begin(recording=args.record_play)
     state, info = env.reset()
     total_reward = 0
@@ -79,11 +78,10 @@ def main(args):
         reward += (score - last_score) / 100.0
       last_score = score
 
-      frame = render_with_q_values(next_state, q_values, action, action_labels)
-      if recording:
-        recording.add_frame(frame)
       agent.remember(action, reward, next_state, done)
       agent.replay()
+
+      render(next_state, q_values, action, action_labels, recording=recording)
 
       state = next_state
       total_reward += reward

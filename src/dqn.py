@@ -3,6 +3,7 @@ import random
 import torch
 import cv2
 import torch.nn as nn
+import src.render as render
 
 
 # Define the DQN model
@@ -34,38 +35,6 @@ class DQN(nn.Module):
       self.linear.append(nn.Linear(in_, out_))
     self.linear = nn.ModuleList(self.linear)
 
-  def render(self, x, side_input: int):
-    num_frames = x.shape[0]
-    frames = x.cpu().detach().numpy()
-    # Normalize and convert to uint8 for display if needed
-    if frames.max() <= 1.0:
-      frames = (frames * 255).astype(np.uint8)
-    else:
-      frames = frames.astype(np.uint8)
-    # Stack frames horizontally for visualization
-    stacked = np.concatenate([frames[i] for i in range(num_frames)], axis=1)
-    # Scale stacked 2x the size
-    stacked = cv2.resize(stacked, (stacked.shape[1] * 2, stacked.shape[0] * 2),
-                         interpolation=cv2.INTER_NEAREST)
-
-    # If grayscale, add channel dimension for cv2
-    if stacked.ndim == 2:
-      stacked = cv2.cvtColor(stacked, cv2.COLOR_GRAY2BGR)
-    # Render side_input value below the stacked frames
-    text = f"side_input: {side_input.item()}"
-    # Calculate new image height to add space for text
-    text_height = 40
-    new_height = stacked.shape[0] + text_height
-    new_img = np.zeros((new_height, stacked.shape[1], 3), dtype=stacked.dtype)
-    new_img[:stacked.shape[0], :, :] = stacked
-    # Put text in the new area below the frames
-    cv2.putText(new_img, text, (10, stacked.shape[0] + 30),
-                cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-    stacked = new_img
-    cv2.imshow("Stacked Frames", stacked)
-    cv2.waitKey(1)
-    #cv2.destroyAllWindows()
-
   def forward(self, x, side_input):
     # Add batch dimension if input is (C, H, W)
     has_batch_dim = False
@@ -73,8 +42,8 @@ class DQN(nn.Module):
       has_batch_dim = True
 
     if not has_batch_dim:
-      # When not trainig we render the input frames
-      self.render(x, side_input)
+      # When not trainig we may render the input frames
+      render.maybe_render_dqn(x, side_input)
 
     if not has_batch_dim:
       x = x.unsqueeze(0)

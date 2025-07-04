@@ -45,6 +45,8 @@ class Agent:
       self.get_loss = nn.MSELoss
     elif self.config['loss'] == 'smooth_l1':
       self.get_loss = nn.SmoothL1Loss
+    elif self.config['loss'] == 'huber':
+      self.get_loss = nn.HuberLoss
     else:
       raise ValueError(f"Unsupported loss function: {self.config['loss']}")
 
@@ -116,17 +118,17 @@ class Agent:
     self.memory.append(
         (curr_state, self.last_action, action, reward, next_state, done))
 
-    q_estimate = reward + self.gamma * torch.argmax(
-        self.target_model(
-            torch.tensor(np.concatenate(
-                (curr_state[1:], [next_state]), axis=0, dtype=np.float32),
-                         device=self.device),
-            torch.tensor([action], device=self.device))).item() * (not done)
-
     # Prioritize learning from bad more than good experiences.
     if self.memory_selection == 'uniform':
       self.memory_error.append(1.0)
     elif self.memory_selection == 'prioritized':
+      # TODO(gingaramo): Revisit this formula below.
+      q_estimate = reward + self.gamma * torch.argmax(
+          self.target_model(
+              torch.tensor(np.concatenate(
+                  (curr_state[1:], [next_state]), axis=0, dtype=np.float32),
+                           device=self.device),
+              torch.tensor([action], device=self.device))).item() * (not done)
       self.memory_error.append(
           td_error(self.last_q_values[action],
                    q_estimate)**self.memory_selection_alpha)
