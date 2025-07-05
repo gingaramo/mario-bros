@@ -33,8 +33,9 @@ class Agent:
                                                   1.0)
     self.memory_selection_beta = self.config.get('memory_selection_beta', 1.0)
     self.batch_size = config['batch_size']
-    self.target_update_frequency = config.get('target_update_frequency', 0)
-    self.replays_until_target_update = self.target_update_frequency
+    self.replays_until_target_update = config.get(
+        'replays_until_target_update', 0)
+    self.target_updates_counter = 0
 
     # Learning parameters.
     self.gamma = config['gamma']
@@ -85,10 +86,10 @@ class Agent:
 
     self.state = State(self.device, config['state'])
     if 'dqn' in config['network']:
-      self.model = DQN(action_size, self.state.current(),
+      self.model = DQN(action_size, self.state.current(), torch.Tensor([1]),
                        config['network']['dqn'])
       self.target_model = DQN(action_size, self.state.current(),
-                              config['network']['dqn'])
+                              torch.Tensor([1]), config['network']['dqn'])
       if os.path.exists(self.checkpoint_path):
         self.model.load_state_dict(
             torch.load(self.checkpoint_path, map_location=self.device))
@@ -160,9 +161,10 @@ class Agent:
     self.last_action_repeated = 0
 
     action = None
-    q_values = self.model(
-        self.state.current().to(self.device),
-        torch.tensor([self.last_action or 0], device=self.device))
+    with torch.no_grad():
+      q_values = self.model(
+          self.state.current().to(self.device),
+          torch.tensor([self.last_action or 0], device=self.device))
     q_values_np = q_values.cpu().detach().numpy()
     # "Act values" are q values for most cases but for softmax.
     act_values = q_values_np
@@ -187,6 +189,9 @@ class Agent:
     self.last_action = action
     self.last_q_values = q_values
     self.last_act_values = act_values
+    # Log histogram of act_values (Q-values or softmax probabilities)
+    self.summary_writer.add_histogram('Act/ActValues', act_values,
+                                      self.global_step)
     return action, act_values
 
   def clip_gradients(self):
@@ -240,7 +245,7 @@ class Agent:
     all_next_state = torch.tensor(np.stack(all_next_state),
                                   dtype=torch.float).to(
                                       self.device).unsqueeze(1)
-    all_next_state = torch.concat([all_state[:, 1:, :], all_next_state],
+    all_next_state = torch.concat([all_state[:, 1:, :, :], all_next_state],
                                   axis=1)
     all_done = torch.tensor(all_done, dtype=torch.bool, device=self.device)
 
@@ -272,7 +277,12 @@ class Agent:
     # Update target model every `target_update_frequency` steps
     self.replays_until_target_update -= 1
     if self.replays_until_target_update <= 0:
-      self.replays_until_target_update = self.target_update_frequency
+      self.replays_until_target_update = self.config.get(
+          'replays_until_target_update', 0)
+      self.target_updates_counter += 1
+      self.summary_writer.add_scalar("Replay/TargetUpdate",
+                                     self.target_updates_counter,
+                                     self.global_step)
       self.target_model.load_state_dict(self.model.state_dict())
 
     self.optimizer.zero_grad()

@@ -5,7 +5,20 @@ import threading
 
 from pynput import keyboard
 
+HEADLESS_MODE = False
 RENDERING_ENABLED = True
+
+
+def set_headless_mode(value):
+  global HEADLESS_MODE
+  print(f"Headless mode: {value}")
+  HEADLESS_MODE = value
+
+
+def should_render():
+  global HEADLESS_MODE
+  global RENDERING_ENABLED
+  return (not HEADLESS_MODE) and RENDERING_ENABLED
 
 
 def on_press(key):
@@ -31,8 +44,7 @@ keyboard_thread.start()
 
 
 def maybe_render_dqn(x, side_input: int):
-  global RENDERING_ENABLED
-  if not RENDERING_ENABLED:
+  if not should_render():
     return
   num_frames = x.shape[0]
   frames = x.cpu().detach().numpy()
@@ -121,11 +133,10 @@ def frame_with_q_values(next_state, q_values, action, labels):
 
 
 def render(next_state, q_values, action, labels, recording=None):
-  global RENDERING_ENABLED
-  if RENDERING_ENABLED or recording:
+  if should_render() or recording:
     frame = frame_with_q_values(next_state, q_values, action, labels)
   if recording:
     recording.add_frame(frame)
-  if RENDERING_ENABLED:
+  if should_render():
     cv2.imshow("Frame with Q-values", frame)
     cv2.waitKey(1)

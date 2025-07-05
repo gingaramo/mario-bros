@@ -8,12 +8,13 @@ import src.render as render
 # Define the DQN model
 class DQN(nn.Module):
 
-  def __init__(self, action_size: int, mock_input: torch.Tensor, config: dict):
+  def __init__(self, action_size: int, mock_cnn_input: torch.Tensor,
+               mock_side_input: torch.Tensor, config: dict):
     super(DQN, self).__init__()
-    print(f"{action_size=}, {mock_input.shape=}, {config=}")
-    # We need to ensure mock_input is on the CPU for Conv2d initialization.
-    mock_input = mock_input.to(torch.device('cpu'))
-    self.conv1 = nn.Conv2d(mock_input.shape[0], 64, 8, stride=4)
+    print(f"{action_size=}, {mock_cnn_input.shape=}, {config=}")
+    # We need to ensure mock_cnn_input is on the CPU for Conv2d initialization.
+    mock_cnn_input = mock_cnn_input.to(torch.device('cpu'))
+    self.conv1 = nn.Conv2d(mock_cnn_input.shape[0], 64, 8, stride=4)
     self.conv2 = nn.Conv2d(64, 128, 4, stride=2)
     self.conv3 = nn.Conv2d(128, 256, 4, stride=2)
 
@@ -24,9 +25,9 @@ class DQN(nn.Module):
       x = self.conv3(x)
       return x.flatten().shape[0]
 
-    self.side_input_floats = 1  # Currently only last_action
+    self.side_input_floats = mock_side_input.shape[0]
     hidden_layers = [
-        _get_flattened_shape(mock_input) + self.side_input_floats
+        _get_flattened_shape(mock_cnn_input) + self.side_input_floats
     ] + config['hidden_layers'] + [action_size]
     # Add linear layers
     self.linear = []

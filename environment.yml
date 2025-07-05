@@ -12,7 +12,7 @@ dependencies:
     - numpy==1.24.4
     - pandas==2.2.3
     - pynput
-    - gymnasium
+    - gymnasium[classic-control]
     - ale-py
     # Use 'editable' install option
     - -e git+https://github.com/Kautenja/nes-py.git@refs/pull/94/head#egg=nes-py

@@ -14,7 +14,7 @@ import numpy as np
 
 from src.agent import Agent
 from src.recording import Recording
-from src.render import render
+from src.render import render, set_headless_mode
 
 import ale_py
 from tqdm import tqdm
@@ -37,7 +37,8 @@ def main(args):
   if args.restart:
     clear_checkpoints(config)
 
-  env = gym.make(config['env']['env_name'])
+  set_headless_mode(config['env'].get('headless', False))
+  env = gym.make(config['env']['env_name'], render_mode='rgb_array')
   if 'SuperMario' in config['env']['env_name']:
     # We only apply this for Mario. Other environments are likely just Atari
     # and thus don't need this.
@@ -55,11 +56,13 @@ def main(args):
     episodes = [agent.episodes_trained]
   else:
     episodes = range(agent.episodes_trained, config['env']['num_episodes'])
-  for episode in tqdm(episodes, desc="Training Episodes"):
+  pbar = tqdm(episodes, desc="Starting")
+  for episode in pbar:
     if args.record_play:
       recording = Recording(f"{config['agent']['name']}_{episode}")
     agent.episode_begin(recording=args.record_play)
     state, info = env.reset()
+    state = env.render()
     total_reward = 0
     done = False
     last_score = None
@@ -67,6 +70,7 @@ def main(args):
     for timestep in range(config['env']['max_steps_per_episode']):
       action, q_values = agent.act(state)
       next_state, reward, done, truncated, info = env.step(action)
+      next_state = env.render()
       if 'SuperMario' in config['env']['env_name']:
         world, stage, score = info['world'], info['stage'], info['score']
       else:
@@ -100,8 +104,8 @@ def main(args):
         'steps': timestep + 1
     }
     agent.episode_end(episode_info)
-    print(
-        f"Episode {episode + 1}/{config['env']['num_episodes']} - Total Reward: {total_reward}, World: {(world, stage)}, Steps: {timestep + 1}"
+    pbar.set_description(
+        f"Episode: {episode+1}, Total Reward: {total_reward} Steps: {timestep + 1}"
     )
 
   env.close()
