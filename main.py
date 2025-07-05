@@ -17,6 +17,7 @@ from src.recording import Recording
 from src.render import render
 
 import ale_py
+from tqdm import tqdm
 
 gym.register_envs(ale_py)
 
@@ -54,7 +55,7 @@ def main(args):
     episodes = [agent.episodes_trained]
   else:
     episodes = range(agent.episodes_trained, config['env']['num_episodes'])
-  for episode in episodes:
+  for episode in tqdm(episodes, desc="Training Episodes"):
     if args.record_play:
       recording = Recording(f"{config['agent']['name']}_{episode}")
     agent.episode_begin(recording=args.record_play)

@@ -1,8 +1,33 @@
 import cv2
 import numpy as np
+import time
+import threading
 
-# By default rendering is enabled
+from pynput import keyboard
+
 RENDERING_ENABLED = True
+
+
+def on_press(key):
+  global RENDERING_ENABLED
+  try:
+    if key.char == 's':
+      RENDERING_ENABLED = True
+    if key.char == 'h':
+      RENDERING_ENABLED = False
+  except AttributeError:
+    pass
+
+
+def start_keyboard_listener():
+  listener = keyboard.Listener(on_press=on_press)
+  listener.start()
+  return listener
+
+
+keyboard_thread = threading.Thread(target=start_keyboard_listener)
+keyboard_thread.daemon = True
+keyboard_thread.start()
 
 
 def maybe_render_dqn(x, side_input: int):
@@ -97,18 +122,10 @@ def frame_with_q_values(next_state, q_values, action, labels):
 
 def render(next_state, q_values, action, labels, recording=None):
   global RENDERING_ENABLED
-  key = cv2.pollKey()
-  if key != -1:
-    if key == ord('h') or key == ord('H'):
-      RENDERING_ENABLED = False
-      print("Rendering hidden (press 'S' to show again)")
-    elif key == ord('s') or key == ord('S'):
-      RENDERING_ENABLED = True
-      print("Rendering shown (press 'H' to hide)")
-
   if RENDERING_ENABLED or recording:
     frame = frame_with_q_values(next_state, q_values, action, labels)
-    if recording:
-      recording.add_frame(frame)
-    if RENDERING_ENABLED:
-      cv2.imshow("Frame with Q-values", frame)
+  if recording:
+    recording.add_frame(frame)
+  if RENDERING_ENABLED:
+    cv2.imshow("Frame with Q-values", frame)
+    cv2.waitKey(1)

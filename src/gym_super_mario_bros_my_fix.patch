@@ -1,8 +1,8 @@
 diff --git a/gym_super_mario_bros/smb_env.py b/gym_super_mario_bros/smb_env.py
-index 95c1492..5caef1d 100644
+index 95c1492..5d231c3 100644
 --- a/gym_super_mario_bros/smb_env.py
 +++ b/gym_super_mario_bros/smb_env.py
-@@ -366,7 +366,7 @@ class SuperMarioBrosEnv(NESEnv):
+@@ -366,19 +366,19 @@ class SuperMarioBrosEnv(NESEnv):
          self._time_last = self._time
          self._x_position_last = self._x_position
  
@@ -11,12 +11,36 @@ index 95c1492..5caef1d 100644
          """
          Handle any RAM hacking after a step occurs.
  
-@@ -378,7 +378,7 @@ class SuperMarioBrosEnv(NESEnv):
+         Args:
+-            done: whether the done flag is set to true
++            done: whether the done or truncated flag is set to true
+ 
+         Returns:
+             None
  
          """
-         # if done flag is set a reset is incoming anyway, ignore any hacking
+-        # if done flag is set a reset is incoming anyway, ignore any hacking
 -        if done:
++        # if done or truncated a reset is incoming anyway, ignore any hacking
 +        if done or truncated:
              return
          # if mario is dying, then cut to the chase and kill hi,
          if self._is_dying:
+@@ -396,12 +396,16 @@ class SuperMarioBrosEnv(NESEnv):
+         """Return the reward after a step occurs."""
+         return self._x_reward + self._time_penalty + self._death_penalty
+ 
+-    def _get_done(self):
++    def _get_terminated(self):
+         """Return True if the episode is over, False otherwise."""
+         if self.is_single_stage_env:
+             return self._is_dying or self._is_dead or self._flag_get
+         return self._is_game_over
+ 
++    def _get_truncated(self):
++        """Return True if truncated """
++        return False
++
+     def _get_info(self):
+         """Return the info after a step occurs"""
+         return dict(
