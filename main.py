@@ -67,6 +67,9 @@ def main(args):
     done = False
     last_score = None
 
+    if config['env'].get('max_num_steps', float('inf')) < agent.global_step:
+      print(f"Maximum number of steps {config['env']['max_num_steps']}")
+      break
     for timestep in range(config['env']['max_steps_per_episode']):
       action, q_values = agent.act(state)
       next_state, reward, done, truncated, info = env.step(action)

@@ -14,9 +14,9 @@ class DQN(nn.Module):
     print(f"{action_size=}, {mock_cnn_input.shape=}, {config=}")
     # We need to ensure mock_cnn_input is on the CPU for Conv2d initialization.
     mock_cnn_input = mock_cnn_input.to(torch.device('cpu'))
-    self.conv1 = nn.Conv2d(mock_cnn_input.shape[0], 64, 8, stride=4)
-    self.conv2 = nn.Conv2d(64, 128, 4, stride=2)
-    self.conv3 = nn.Conv2d(128, 256, 4, stride=2)
+    self.conv1 = nn.Conv2d(mock_cnn_input.shape[0], 32, 8, stride=4)
+    self.conv2 = nn.Conv2d(32, 64, 4, stride=2)
+    self.conv3 = nn.Conv2d(64, 64, 4, stride=1)
 
     def _get_flattened_shape(x: torch.Tensor) -> int:
       x = x.unsqueeze(0)

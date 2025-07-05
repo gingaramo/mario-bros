@@ -1,45 +1,42 @@
-device: cpu
+device: mps
 
 env:
   env_name: ALE/Pong-v5
   env_action_labels: [NOOP, FIRE, RIGHT, LEFT, RIGHTFIRE, LEFTFIRE]
-  num_episodes: 500
-  max_steps_per_episode: 5000
+  num_episodes: 250000
+  max_num_steps: 4
+  max_steps_per_episode: 3000
   use_score: false
 
 agent:
   name: test_baseline
   # Minimal agent settings for baseline
   gamma: 0.99
-  epsilon: 1.0
-  epsilon_min: 0.02
-  epsilon_decay: 0.995
-  learning_rate: 0.0001
-  batch_size: 16
-  memory_size: 10000
-  min_memory_size: 5000
-  memory_selection: prioritized
-  memory_selection_alpha: 0.7 # PER paper "sweet spot"
-  memory_selection_beta: 0.5  # PER paper "sweet spot"
-  loss: smooth_l1
-  clip_gradients: 0.15
+  epsilon: 0.9
+  epsilon_min: 0.1
+  epsilon_decay: 0.999
+  learning_rate: 0.00005
+  batch_size: 64
+  memory_size: 1000000
+  min_memory_size: 1000
+  memory_selection: uniform
+  loss: huber
+  clip_gradients: 10.0
   optimizer: adam
-  action_selection: softmax
-  action_selection_temperature: 0.1
+  action_selection: max
 
   # Action parameters
-  action_repeat_steps: 0 # environment already skips 4 frames
-  replay_every_n_steps: 4
-  target_update_frequency: 2048
-
+  action_repeat_steps: 4
+  replay_every_n_steps: 8
+  target_update_freq: 10000
 
   state:
-    resize_shape: [128, 128]
+    resize_shape: [84, 84]
     grayscale: true
     normalize: true
-    stack_frames: 4
+    stack_frames: 8
 
   network:
     dqn:
-      hidden_layers: [256]
+      hidden_layers: [512, 512]
 
