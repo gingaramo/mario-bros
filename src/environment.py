@@ -161,3 +161,25 @@ class HistoryEnv(gym.Wrapper):
     frame, info = self.env.reset(**kwargs)
     self.states.append(frame)
     return self._get_history(), info
+
+
+class CaptureRenderFrameEnv(gym.Wrapper):
+  """
+  Captures the rendered frame from the environment.
+  
+  config options:
+    - n/a
+  """
+
+  def __init__(self, env: gym.Env, config: dict = None) -> None:
+    super().__init__(env)
+    self.rendered_frame: Optional[np.ndarray] = None
+
+  def step(self, action: int) -> Tuple[np.ndarray, float, bool, bool, dict]:
+    obs, reward, terminated, truncated, info = self.env.step(action)
+    self.rendered_frame = self.env.render(mode='rgb_array')
+    return obs, reward, terminated, truncated, info
+
+  def reset(self, **kwargs) -> Tuple[np.ndarray, dict]:
+    self.rendered_frame = None
+    return self.env.reset(**kwargs)

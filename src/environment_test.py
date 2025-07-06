@@ -5,7 +5,7 @@ from unittest.mock import Mock, MagicMock, patch
 from typing import Tuple, Dict, Any
 import cv2
 
-from environment import PreprocessFrameEnv, RepeatActionEnv, ReturnActionEnv, HistoryEnv
+from environment import PreprocessFrameEnv, RepeatActionEnv, ReturnActionEnv, HistoryEnv, CaptureRenderFrameEnv
 
 
 class MockEnv(gym.Env):
@@ -481,6 +481,67 @@ class TestIntegration(unittest.TestCase):
 
     self.assertEqual(obs1.shape, obs2.shape)
     self.assertEqual(reward1, reward2)
+
+
+class MockRenderEnv(MockEnv):
+  """Mock environment with render method for testing CaptureRenderFrameEnv."""
+
+  def __init__(self,
+               frame_shape: Tuple[int, ...] = (84, 84, 3),
+               action_space_n: int = 4):
+    super().__init__(frame_shape, action_space_n)
+    self.render_called = False
+    self.render_return = np.ones(frame_shape, dtype=np.uint8) * 123
+
+  def render(self, mode='rgb_array'):
+    self.render_called = True
+    return self.render_return
+
+
+class TestCaptureRenderFrameEnv(unittest.TestCase):
+  """Test cases for CaptureRenderFrameEnv wrapper."""
+
+  def setUp(self):
+    self.base_env = MockRenderEnv()
+
+  def test_init(self):
+    """Test initialization."""
+    env = CaptureRenderFrameEnv(self.base_env)
+    self.assertIsNone(env.rendered_frame)
+
+  def test_step_captures_rendered_frame(self):
+    """Test that step captures the rendered frame."""
+    env = CaptureRenderFrameEnv(self.base_env)
+    obs, reward, terminated, truncated, info = env.step(0)
+    self.assertTrue(self.base_env.render_called)
+    self.assertIsNotNone(env.rendered_frame)
+    np.testing.assert_array_equal(env.rendered_frame,
+                                  self.base_env.render_return)
+    self.assertEqual(obs.shape, self.base_env.frame_shape)
+    self.assertEqual(reward, 1.0)
+
+  def test_step_multiple_calls(self):
+    """Test that rendered_frame updates on each step."""
+    env = CaptureRenderFrameEnv(self.base_env)
+    env.step(0)
+    first_frame = env.rendered_frame.copy()
+    # Change what render returns
+    self.base_env.render_return = np.ones(self.base_env.frame_shape,
+                                          dtype=np.uint8) * 77
+    env.step(1)
+    np.testing.assert_array_equal(env.rendered_frame,
+                                  self.base_env.render_return)
+    self.assertFalse(np.array_equal(first_frame, env.rendered_frame))
+
+  def test_reset_clears_rendered_frame(self):
+    """Test that reset clears the rendered frame."""
+    env = CaptureRenderFrameEnv(self.base_env)
+    env.step(0)
+    self.assertIsNotNone(env.rendered_frame)
+    obs, info = env.reset()
+    self.assertIsNone(env.rendered_frame)
+    self.assertEqual(obs.shape, self.base_env.frame_shape)
+    self.assertIsInstance(info, dict)
 
 
 if __name__ == '__main__':
