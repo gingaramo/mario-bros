@@ -37,13 +37,37 @@ class Observation(object):
     Initializes an Observation instance.
 
     Args:
-      frame: Optional pixel-frame as a numpy array (N, H, W, C) or (N, H, W) for grayscale.
+      frame: Optional pixel-frame as a numpy array in (C, H, W) format for RGB or (H, W) for grayscale.
+             For history frames, can be (C, N, H, W) for RGB or (N, H, W) for grayscale (Conv3D compatible).
       dense: Optional dense vector as a numpy array (N, D) or (D,).
     """
+    if frame is not None:
+      # Convert from (H,W,C) to (C,H,W) if needed
+      if len(
+          frame.shape) == 3 and frame.shape[2] <= 16 and frame.shape[2] < min(
+              frame.shape[:2]):
+        # This looks like (H,W,C) format - convert to (C,H,W)
+        frame = np.transpose(frame, (2, 0, 1))
+
+      # Validate frame format - allow various shapes for different use cases
+      if len(frame.shape) == 2:
+        # Grayscale (H, W) is fine
+        pass
+      elif len(frame.shape) == 3:
+        # Most common case: (C, H, W) or (N, H, W) for stacked frames
+        pass
+      elif len(frame.shape) == 4:
+        # For batched frames from some environments
+        pass
+      else:
+        raise ValueError(
+            f"Frame must be 2D, 3D, or 4D array. Got shape {frame.shape}")
+
+    assert (frame is not None) or (dense is not None), \
+        "Observation must have at least one of frame or dense vector."
+
     self.frame = frame
     self.dense = dense
-    assert (self.frame is not None) or (self.dense is not None), \
-        "Observation must have at least one of frame or dense vector."
 
   def __repr__(self) -> str:
     return f"Observation(frame={self.frame.shape if self.frame is not None else None}, " \
@@ -80,10 +104,10 @@ class ObservationWrapper(gym.Wrapper):
 
 class PreprocessFrameEnv(gym.Wrapper):
   """
-  Postprocesses pixel-frame step() observations with common transformations.
+  Postprocesses Observation 'frame' with common transformations.
   
   config options:
-    - resize_shape: (int, int) or None ; if present, frame is resized
+    - resize_shape: [int, int] or None ; if present, frame is resized
     - grayscale: bool
     - normalize: bool
   """
@@ -95,18 +119,19 @@ class PreprocessFrameEnv(gym.Wrapper):
   def __init__(self, env: gym.Env, config: dict) -> None:
     super().__init__(env)
     self.resize_shape = config.get('resize_shape', None)
-    if self.resize_shape is not None:
-      self.resize_shape = tuple(self.resize_shape)
     self.grayscale = bool(config.get('grayscale', False))
     self.normalize = bool(config.get('normalize', False))
 
   def preprocess(self, frame: np.ndarray) -> np.ndarray:
     if not isinstance(frame, np.ndarray):
       raise ValueError("Input frame must be a numpy ndarray.")
-    if self.resize_shape is not None:
-      if not (isinstance(self.resize_shape, tuple)
-              and len(self.resize_shape) == 2):
-        raise ValueError("resize_shape must be a tuple of (int, int)")
+
+    # Convert from (C,H,W) to (H,W,C) for OpenCV processing if needed
+    if len(frame.shape) == 3 and frame.shape[0] <= 4:
+      frame = frame.transpose(1, 2, 0)
+
+    if self.resize_shape:
+      assert len(self.resize_shape) == 2
       frame = cv2.resize(frame,
                          self.resize_shape,
                          interpolation=cv2.INTER_AREA)
@@ -115,7 +140,11 @@ class PreprocessFrameEnv(gym.Wrapper):
         frame = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
     if self.normalize:
       frame = frame.astype(np.float32) / 255.0
-    # Keep grayscale as 2D array (H, W) without channel dimension
+
+    # Convert back to (C,H,W) format if RGB, keep (H,W) for grayscale
+    if len(frame.shape) == 3:
+      frame = frame.transpose(2, 0, 1)
+
     return frame
 
   def step(self, action: int) -> Tuple[Observation, float, bool, bool, dict]:
@@ -269,7 +298,14 @@ class HistoryEnv(gym.Wrapper):
         first_frame = frame_history[0]
         pad_frames = [first_frame for _ in range(num_missing)]
         frame_history = pad_frames + frame_history
-      stacked_frames = np.stack(frame_history, axis=0)
+
+      # Stack frames for Conv3D compatibility
+      if len(frame_history[0].shape) == 3:
+        # RGB frames: (C, H, W) -> stack to get (C, N, H, W) for Conv3D
+        stacked_frames = np.stack(frame_history, axis=1)
+      else:
+        # Grayscale frames: (H, W) -> stack to get (N, H, W) for Conv3D
+        stacked_frames = np.stack(frame_history, axis=0)
     else:
       stacked_frames = None
 
@@ -303,6 +339,8 @@ class CaptureRenderFrameEnv(gym.Wrapper):
   Captures the rendered frame from the environment after each step.
 
   The rendered frame can be accessed via the `rendered_frame` attribute (H,W,C).
+  Returned observations always have their channel dimension first (C,H,W) to match
+  the expected input format for Conv[2D|3D].
 
   config options:
     - mode: str ; "capture" (default), "replace", or "append"
@@ -323,21 +361,35 @@ class CaptureRenderFrameEnv(gym.Wrapper):
 
   def step(self, action: int) -> Tuple[Observation, float, bool, bool, dict]:
     obs, reward, terminated, truncated, info = self.env.step(action)
-    self.rendered_frame = self.env.render(mode='rgb_array')
+    self.rendered_frame = self.env.render()
 
     if self.mode == 'replace':
-      return Observation(frame=self.rendered_frame.permuted(2, 0, 1),
-                         dense=obs.dense), reward, terminated, truncated, info
+      # If rendered frame is None, fall back to original observation
+      if self.rendered_frame is not None:
+        return Observation(
+            frame=self.rendered_frame,
+            dense=obs.dense), reward, terminated, truncated, info
+      else:
+        return obs, reward, terminated, truncated, info
     elif self.mode == 'append':
       # Combine rendered frame with original observation frame
-      if obs.frame is not None:
-        # Stack rendered frame with original frame
-        combined_frame = np.stack([self.rendered_frame, obs.frame], axis=0)
+      if self.rendered_frame is not None and obs.frame is not None:
+        # Convert rendered frame to (C,H,W) - will be handled by Observation class
+        rendered_obs = Observation(frame=self.rendered_frame)
+        # Stack rendered frame with original frame along channel dimension
+        combined_frame = np.concatenate([rendered_obs.frame, obs.frame],
+                                        axis=0)
+        return Observation(
+            frame=combined_frame,
+            dense=obs.dense), reward, terminated, truncated, info
+      elif self.rendered_frame is not None:
+        # Only rendered frame available
+        return Observation(
+            frame=self.rendered_frame,
+            dense=obs.dense), reward, terminated, truncated, info
       else:
-        # Just use rendered frame
-        combined_frame = self.rendered_frame
-      return Observation(frame=combined_frame,
-                         dense=obs.dense), reward, terminated, truncated, info
+        # Fall back to original observation
+        return obs, reward, terminated, truncated, info
     else:  # mode == 'capture'
       return obs, reward, terminated, truncated, info
 
@@ -348,17 +400,28 @@ class CaptureRenderFrameEnv(gym.Wrapper):
     if self.mode == 'replace':
       # For replace mode, we need to render the initial frame
       self.rendered_frame = self.env.render()
-      return Observation(frame=self.rendered_frame, dense=obs.dense), info
+      if self.rendered_frame is not None:
+        return Observation(frame=self.rendered_frame, dense=obs.dense), info
+      else:
+        # If rendered frame is None, fall back to original observation
+        return obs, info
     elif self.mode == 'append':
       # For append mode, we need to render the initial frame and combine
       self.rendered_frame = self.env.render()
-      if obs.frame is not None:
-        # Stack rendered frame with original frame
-        combined_frame = np.stack([self.rendered_frame, obs.frame], axis=0)
+
+      if self.rendered_frame is not None and obs.frame is not None:
+        # Convert rendered frame to (C,H,W) - will be handled by Observation class
+        rendered_obs = Observation(frame=self.rendered_frame)
+        # Stack rendered frame with original frame along channel dimension
+        combined_frame = np.concatenate([rendered_obs.frame, obs.frame],
+                                        axis=0)
+        return Observation(frame=combined_frame, dense=obs.dense), info
+      elif self.rendered_frame is not None:
+        # Only rendered frame available
+        return Observation(frame=self.rendered_frame, dense=obs.dense), info
       else:
-        # Just use rendered frame
-        combined_frame = self.rendered_frame
-      return Observation(frame=combined_frame, dense=obs.dense), info
+        # Fall back to original observation
+        return obs, info
     else:  # mode == 'capture'
       return obs, info
 

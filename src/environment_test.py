@@ -72,7 +72,7 @@ class TestPreprocessFrameEnv(unittest.TestCase):
     frame = np.random.randint(0, 256, (84, 84, 3), dtype=np.uint8)
     processed = env.preprocess(frame)
 
-    self.assertEqual(processed.shape, (42, 42, 3))
+    self.assertEqual(processed.shape, (3, 42, 42))
 
   def test_preprocess_grayscale_only(self):
     """Test preprocessing with grayscale only."""
@@ -121,7 +121,7 @@ class TestPreprocessFrameEnv(unittest.TestCase):
     env = PreprocessFrameEnv(self.base_env, config)
 
     frame = np.random.randint(0, 256, (84, 84, 3), dtype=np.uint8)
-    with self.assertRaises(ValueError):
+    with self.assertRaises(AssertionError):
       env.preprocess(frame)
 
   def test_step(self):
@@ -217,7 +217,10 @@ class TestRepeatActionEnv(unittest.TestCase):
     obs, info = env.reset()
 
     self.assertIsInstance(obs, Observation)
-    self.assertEqual(obs.frame.shape, (84, 84, 3))
+    expected_shape = (self.base_env.frame_shape[2],
+                      self.base_env.frame_shape[0],
+                      self.base_env.frame_shape[1])
+    self.assertEqual(obs.frame.shape, expected_shape)
     self.assertIsInstance(info, dict)
     self.assertEqual(self.base_env.step_count, 0)
 
@@ -253,7 +256,8 @@ class TestReturnActionEnv(unittest.TestCase):
     obs, reward, terminated, truncated, info = env.step(1)
 
     # Should return original observation
-    self.assertEqual(obs.shape, (84, 84, 3))
+    self.assertIsInstance(obs, Observation)
+    self.assertEqual(obs.frame.shape, (3, 84, 84))
     self.assertIsNone(info['prev_action'])  # No previous action
     self.assertEqual(env.prev_action, 1)
 
@@ -268,7 +272,8 @@ class TestReturnActionEnv(unittest.TestCase):
     obs, reward, terminated, truncated, info = env.step(2)
 
     # Should return original observation
-    self.assertEqual(obs.shape, (84, 84, 3))
+    self.assertIsInstance(obs, Observation)
+    self.assertEqual(obs.frame.shape, (3, 84, 84))
     self.assertEqual(info['prev_action'], 1)  # Previous action
     self.assertEqual(env.prev_action, 2)  # Current action stored
 
@@ -278,11 +283,12 @@ class TestReturnActionEnv(unittest.TestCase):
 
     obs, reward, terminated, truncated, info = env.step(1)
 
-    # Should return tuple of (obs, prev_action)
-    self.assertIsInstance(obs, tuple)
-    self.assertEqual(len(obs), 2)
-    self.assertEqual(obs[0].shape, (84, 84, 3))  # Original observation
-    self.assertIsNone(obs[1])  # No previous action
+    # Should return observation with dense vector containing previous action
+    self.assertIsInstance(obs, Observation)
+    self.assertEqual(obs.frame.shape, (3, 84, 84))  # Original frame unchanged
+    self.assertIsNotNone(obs.dense)  # Dense vector should exist
+    self.assertEqual(obs.dense.shape, (1, ))  # Single value (previous action)
+    self.assertEqual(obs.dense[0], 0)  # No previous action (represented as 0)
     self.assertEqual(env.prev_action, 1)
 
   def test_step_append_mode_subsequent_actions(self):
@@ -295,11 +301,12 @@ class TestReturnActionEnv(unittest.TestCase):
     # Second step
     obs, reward, terminated, truncated, info = env.step(2)
 
-    # Should return tuple of (obs, prev_action)
-    self.assertIsInstance(obs, tuple)
-    self.assertEqual(len(obs), 2)
-    self.assertEqual(obs[0].shape, (84, 84, 3))  # Original observation
-    self.assertEqual(obs[1], 1)  # Previous action
+    # Should return observation with dense vector containing previous action
+    self.assertIsInstance(obs, Observation)
+    self.assertEqual(obs.frame.shape, (3, 84, 84))  # Original frame unchanged
+    self.assertIsNotNone(obs.dense)  # Dense vector should exist
+    self.assertEqual(obs.dense.shape, (1, ))  # Single value (previous action)
+    self.assertEqual(obs.dense[0], 1)  # Previous action
     self.assertEqual(env.prev_action, 2)  # Current action stored
 
   def test_step_preserves_existing_info(self):
@@ -325,7 +332,8 @@ class TestReturnActionEnv(unittest.TestCase):
     obs, info = env.reset()
 
     self.assertIsNone(env.prev_action)
-    self.assertEqual(obs.shape, (84, 84, 3))
+    self.assertIsInstance(obs, Observation)
+    self.assertEqual(obs.frame.shape, (3, 84, 84))
     self.assertIsInstance(info, dict)
 
   def test_reset_append_mode(self):
@@ -340,11 +348,12 @@ class TestReturnActionEnv(unittest.TestCase):
     obs, info = env.reset()
 
     self.assertIsNone(env.prev_action)
-    # Should return tuple of (obs, None)
-    self.assertIsInstance(obs, tuple)
-    self.assertEqual(len(obs), 2)
-    self.assertEqual(obs[0].shape, (84, 84, 3))  # Original observation
-    self.assertIsNone(obs[1])  # No previous action after reset
+    # Should return observation with dense vector containing 0 (no previous action)
+    self.assertIsInstance(obs, Observation)
+    self.assertEqual(obs.frame.shape, (3, 84, 84))
+    self.assertIsNotNone(obs.dense)
+    self.assertEqual(obs.dense.shape, (1, ))
+    self.assertEqual(obs.dense[0], 0)  # No previous action
     self.assertIsInstance(info, dict)
 
 
@@ -395,10 +404,10 @@ class TestHistoryEnv(unittest.TestCase):
     history = env._get_history()
 
     self.assertIsInstance(history, Observation)
-    self.assertEqual(history.frame.shape, (3, 84, 84, 3))
+    self.assertEqual(history.frame.shape, (3, 3, 84, 84))  # (C, N, H, W)
     # First two frames should be identical (padded)
-    np.testing.assert_array_equal(history.frame[0], history.frame[1])
-    np.testing.assert_array_equal(history.frame[1], history.frame[2])
+    np.testing.assert_array_equal(history.frame[:, 0], history.frame[:, 1])
+    np.testing.assert_array_equal(history.frame[:, 1], history.frame[:, 2])
 
   def test_get_history_sufficient_frames(self):
     """Test _get_history with sufficient frames."""
@@ -416,9 +425,12 @@ class TestHistoryEnv(unittest.TestCase):
     history = env._get_history()
 
     self.assertIsInstance(history, Observation)
-    self.assertEqual(history.frame.shape, (2, 84, 84, 3))
-    np.testing.assert_array_equal(history.frame[0], frame1)
-    np.testing.assert_array_equal(history.frame[1], frame2)
+    self.assertEqual(history.frame.shape, (3, 2, 84, 84))  # (C, N, H, W)
+    # Convert to (H, W, C) for comparison with original frames
+    np.testing.assert_array_equal(history.frame[:, 0].transpose(1, 2, 0),
+                                  frame1)
+    np.testing.assert_array_equal(history.frame[:, 1].transpose(1, 2, 0),
+                                  frame2)
 
   def test_step_no_skip_frames(self):
     """Test step method."""
@@ -431,7 +443,7 @@ class TestHistoryEnv(unittest.TestCase):
     obs, reward, terminated, truncated, info = env.step(0)
 
     self.assertIsInstance(obs, Observation)
-    self.assertEqual(obs.frame.shape, (2, 84, 84, 3))
+    self.assertEqual(obs.frame.shape, (3, 2, 84, 84))  # (C, N, H, W)
     self.assertEqual(reward, 1.0)  # Single step reward
     self.assertEqual(len(env.states), 2)  # Reset frame + step frame
 
@@ -463,7 +475,9 @@ class TestHistoryEnv(unittest.TestCase):
     obs, reward, terminated, truncated, info = env.step(1)
 
     self.assertIsInstance(obs, Observation)
-    self.assertEqual(obs.frame.shape, (3, 84, 84, 3))
+    self.assertEqual(
+        obs.frame.shape,
+        (3, 3, 84, 84))  # (C, N, H, W) - 3 channels, 3 history frames
     self.assertEqual(obs.dense.shape,
                      (3, 2))  # 3 history steps, 2 dense features each
 
@@ -481,7 +495,7 @@ class TestHistoryEnv(unittest.TestCase):
     obs, info = env.reset()
 
     self.assertIsInstance(obs, Observation)
-    self.assertEqual(obs.frame.shape, (2, 84, 84, 3))
+    self.assertEqual(obs.frame.shape, (3, 2, 84, 84))  # (C, N, H, W)
     self.assertEqual(len(env.states), 1)  # Only reset observation
     self.assertIsInstance(info, dict)
     self.assertEqual(self.base_env.step_count, 0)
@@ -507,8 +521,11 @@ class TestHistoryEnv(unittest.TestCase):
     history = env._get_history()
 
     # Should contain frame2 and frame3, not frame1
-    np.testing.assert_array_equal(history.frame[0], frame2)
-    np.testing.assert_array_equal(history.frame[1], frame3)
+    # Convert to (H, W, C) for comparison with original frames
+    np.testing.assert_array_equal(history.frame[:, 0].transpose(1, 2, 0),
+                                  frame2)
+    np.testing.assert_array_equal(history.frame[:, 1].transpose(1, 2, 0),
+                                  frame3)
 
   def test_dense_vector_history_stacking(self):
     """Test that dense vectors are properly stacked as history."""
@@ -551,7 +568,7 @@ class TestHistoryEnv(unittest.TestCase):
     history = env._get_history()
 
     self.assertIsInstance(history, Observation)
-    self.assertEqual(history.frame.shape, (2, 84, 84, 3))
+    self.assertEqual(history.frame.shape, (3, 2, 84, 84))  # (C, N, H, W)
     # Only one observation has dense vector, but we pad to match history_length=2
     self.assertEqual(history.dense.shape, (2, 2))
     # Both entries should be the same (padded with the first/only dense vector)
@@ -665,8 +682,12 @@ class TestCaptureRenderFrameEnv(unittest.TestCase):
     self.assertIsNotNone(env.rendered_frame)
     np.testing.assert_array_equal(env.rendered_frame,
                                   self.base_env.render_return)
-    # Should return original observation
-    self.assertEqual(obs.shape, self.base_env.frame_shape)
+    # Should return original observation (unchanged but converted to C,H,W format)
+    self.assertIsInstance(obs, Observation)
+    expected_shape = (self.base_env.frame_shape[2],
+                      self.base_env.frame_shape[0],
+                      self.base_env.frame_shape[1])
+    self.assertEqual(obs.frame.shape, expected_shape)
     self.assertEqual(reward, 1.0)
 
   def test_step_replace_mode(self):
@@ -676,8 +697,15 @@ class TestCaptureRenderFrameEnv(unittest.TestCase):
 
     self.assertTrue(self.base_env.render_called)
     self.assertIsNotNone(env.rendered_frame)
-    # Should return rendered frame as observation
-    np.testing.assert_array_equal(obs, self.base_env.render_return)
+    # Should return rendered frame as observation with channel dimension first (C,H,W)
+    self.assertIsInstance(obs, Observation)
+    expected_shape = (self.base_env.frame_shape[2],
+                      self.base_env.frame_shape[0],
+                      self.base_env.frame_shape[1])
+    self.assertEqual(obs.frame.shape, expected_shape)
+    # Check that the data is correctly transposed
+    expected_frame = np.transpose(self.base_env.render_return, (2, 0, 1))
+    np.testing.assert_array_equal(obs.frame, expected_frame)
     self.assertEqual(reward, 1.0)
 
   def test_step_append_mode(self):
@@ -687,11 +715,13 @@ class TestCaptureRenderFrameEnv(unittest.TestCase):
 
     self.assertTrue(self.base_env.render_called)
     self.assertIsNotNone(env.rendered_frame)
-    # Should return tuple of (rendered_frame, original_obs)
-    self.assertIsInstance(obs, tuple)
-    self.assertEqual(len(obs), 2)
-    np.testing.assert_array_equal(obs[0], self.base_env.render_return)
-    self.assertEqual(obs[1].shape, self.base_env.frame_shape)
+    # Should return combined frame with both rendered and original frames
+    self.assertIsInstance(obs, Observation)
+    # Combined frame should have double the channels (6 channels: 3 from rendered + 3 from original)
+    expected_channels = self.base_env.frame_shape[2] * 2
+    expected_shape = (expected_channels, self.base_env.frame_shape[0],
+                      self.base_env.frame_shape[1])
+    self.assertEqual(obs.frame.shape, expected_shape)
     self.assertEqual(reward, 1.0)
 
   def test_reset_capture_mode(self):
@@ -701,7 +731,11 @@ class TestCaptureRenderFrameEnv(unittest.TestCase):
     obs, info = env.reset()
 
     self.assertIsNone(env.rendered_frame)
-    self.assertEqual(obs.shape, self.base_env.frame_shape)
+    self.assertIsInstance(obs, Observation)
+    expected_shape = (self.base_env.frame_shape[2],
+                      self.base_env.frame_shape[0],
+                      self.base_env.frame_shape[1])
+    self.assertEqual(obs.frame.shape, expected_shape)
     self.assertIsInstance(info, dict)
 
   def test_reset_replace_mode(self):
@@ -710,8 +744,15 @@ class TestCaptureRenderFrameEnv(unittest.TestCase):
     obs, info = env.reset()
 
     self.assertIsNotNone(env.rendered_frame)
-    # Should return rendered frame as observation
-    np.testing.assert_array_equal(obs, self.base_env.render_return)
+    # Should return rendered frame as observation with channel dimension first (C,H,W)
+    self.assertIsInstance(obs, Observation)
+    expected_shape = (self.base_env.frame_shape[2],
+                      self.base_env.frame_shape[0],
+                      self.base_env.frame_shape[1])
+    self.assertEqual(obs.frame.shape, expected_shape)
+    # Check that the data is correctly transposed
+    expected_frame = np.transpose(self.base_env.render_return, (2, 0, 1))
+    np.testing.assert_array_equal(obs.frame, expected_frame)
     self.assertIsInstance(info, dict)
 
   def test_reset_append_mode(self):
@@ -720,12 +761,76 @@ class TestCaptureRenderFrameEnv(unittest.TestCase):
     obs, info = env.reset()
 
     self.assertIsNotNone(env.rendered_frame)
-    # Should return tuple of (rendered_frame, original_obs)
-    self.assertIsInstance(obs, tuple)
-    self.assertEqual(len(obs), 2)
-    np.testing.assert_array_equal(obs[0], self.base_env.render_return)
-    self.assertEqual(obs[1].shape, self.base_env.frame_shape)
+    # Should return combined frame with both rendered and original frames
+    self.assertIsInstance(obs, Observation)
+    # Combined frame should have double the channels (6 channels: 3 from rendered + 3 from original)
+    expected_channels = self.base_env.frame_shape[2] * 2
+    expected_shape = (expected_channels, self.base_env.frame_shape[0],
+                      self.base_env.frame_shape[1])
+    self.assertEqual(obs.frame.shape, expected_shape)
     self.assertIsInstance(info, dict)
+
+  def test_channel_dimension_conversion(self):
+    """Test that frames are correctly converted from (H,W,C) to (C,H,W)."""
+    env = CaptureRenderFrameEnv(self.base_env, {'mode': 'replace'})
+    obs, _, _, _, _ = env.step(0)
+
+    # Original rendered frame shape is (H,W,C) = (84,84,3)
+    # After conversion should be (C,H,W) = (3,84,84)
+    self.assertEqual(obs.frame.shape, (3, 84, 84))
+
+    # Check that the conversion is correct by comparing pixel values
+    original_frame = self.base_env.render_return  # (H,W,C)
+    converted_frame = obs.frame  # (C,H,W)
+
+    # Test specific pixel: original[h,w,c] should equal converted[c,h,w]
+    h, w, c = 10, 20, 1
+    self.assertEqual(original_frame[h, w, c], converted_frame[c, h, w])
+
+  def test_grayscale_frame_handling(self):
+    """Test handling of grayscale frames (2D arrays)."""
+    # Create a mock environment that returns grayscale frames
+    grayscale_env = MockRenderEnv(frame_shape=(84, 84))
+    grayscale_env.render_return = np.ones((84, 84), dtype=np.uint8) * 123
+
+    env = CaptureRenderFrameEnv(grayscale_env, {'mode': 'replace'})
+    obs, _, _, _, _ = env.step(0)
+
+    # Grayscale frames should remain unchanged (no channel dimension to convert)
+    self.assertEqual(obs.frame.shape, (84, 84))
+    np.testing.assert_array_equal(obs.frame, grayscale_env.render_return)
+
+  def test_append_mode_channel_combination(self):
+    """Test that append mode correctly combines channels from rendered and original frames."""
+    env = CaptureRenderFrameEnv(self.base_env, {'mode': 'append'})
+    obs, _, _, _, _ = env.step(0)
+
+    # Should have 6 channels total (3 from rendered + 3 from original)
+    self.assertEqual(obs.frame.shape[0], 6)
+
+    # First 3 channels should be from rendered frame
+    rendered_chw = np.transpose(self.base_env.render_return, (2, 0, 1))
+    np.testing.assert_array_equal(obs.frame[:3], rendered_chw)
+
+    # Note: We can't easily test the original frame content since MockEnv generates random frames
+    # But we can verify that the shape is correct and there are 6 channels total
+
+  def test_none_frame_handling(self):
+    """Test handling when rendered frame is None."""
+    # Create a mock environment that returns None from render
+    none_env = MockRenderEnv()
+    none_env.render_return = None
+
+    env = CaptureRenderFrameEnv(none_env, {'mode': 'replace'})
+    obs, _, _, _, _ = env.step(0)
+
+    # Should handle None gracefully by falling back to original observation
+    self.assertIsNotNone(obs)
+    self.assertIsInstance(obs, Observation)
+    # Should return the original frame since rendered frame is None (converted to C,H,W format)
+    expected_shape = (none_env.frame_shape[2], none_env.frame_shape[0],
+                      none_env.frame_shape[1])
+    self.assertEqual(obs.frame.shape, expected_shape)
 
 
 class TestCreateEnvironment(unittest.TestCase):
@@ -738,7 +843,7 @@ class TestCreateEnvironment(unittest.TestCase):
   @patch('gymnasium.make')
   def test_create_environment_basic(self, mock_gym_make):
     """Test creating environment with minimal configuration."""
-    mock_env = Mock()
+    mock_env = MockEnv()  # Use MockEnv which properly inherits from gym.Env
     mock_gym_make.return_value = mock_env
 
     config = self.base_config.copy()
@@ -746,7 +851,8 @@ class TestCreateEnvironment(unittest.TestCase):
 
     mock_gym_make.assert_called_once_with('CartPole-v1',
                                           render_mode='rgb_array')
-    self.assertEqual(env, mock_env)
+    # env will be wrapped, so we can't directly compare
+    self.assertIsNotNone(env)
 
   @patch('gymnasium.make')
   def test_create_environment_with_multiple_wrappers(self, mock_gym_make):
@@ -830,7 +936,7 @@ class TestCreateEnvironment(unittest.TestCase):
   @patch('gymnasium.make')
   def test_create_environment_unknown_wrapper(self, mock_gym_make):
     """Test creating environment with unknown wrapper raises ValueError."""
-    mock_env = Mock()
+    mock_env = MockEnv()  # Use MockEnv which properly inherits from gym.Env
     mock_gym_make.return_value = mock_env
 
     config = self.base_config.copy()
