@@ -30,6 +30,13 @@ Follow these steps to set up the project:
   ./src/apply_patches.sh
   ```
 
+5. **Set up pre-commit hooks (Recommended)**  
+  Install pre-commit hooks to automatically run tests before each commit:
+  ```bash
+  ./scripts/install-hooks.sh
+  ```
+  This ensures code quality and prevents broken commits. See [PRECOMMIT_SETUP.md](PRECOMMIT_SETUP.md) for details.
+
 # How to run
 
 1) Modify or create your own agent in `agents/` folder.

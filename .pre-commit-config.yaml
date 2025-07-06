@@ -1,0 +1,53 @@
+# Pre-commit configuration file
+# This file defines hooks that run before each commit
+
+repos:
+  # Pre-commit hooks for Python
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.4.0
+    hooks:
+      # Check for Python syntax errors and undefined names
+      - id: check-ast
+      # Check for files that would conflict on case-insensitive filesystems
+      - id: check-case-conflict
+      # Check for files with names that would conflict on case-insensitive filesystems
+      - id: check-merge-conflict
+      # Check YAML syntax
+      - id: check-yaml
+      # Check for large files
+      - id: check-added-large-files
+        args: ['--maxkb=1000']
+      # Remove trailing whitespace
+      - id: trailing-whitespace
+      # Ensure files end with newline
+      - id: end-of-file-fixer
+      # Check for private key files
+      - id: detect-private-key
+
+  # Python code formatting with black
+  - repo: https://github.com/psf/black
+    rev: 23.3.0
+    hooks:
+      - id: black
+        language_version: python3
+        args: [--line-length=88]
+
+  # Python import sorting with isort
+  - repo: https://github.com/pycqa/isort
+    rev: 5.12.0
+    hooks:
+      - id: isort
+        args: ["--profile", "black"]
+
+  # Local hooks for running tests
+  - repo: local
+    hooks:
+      # Run all unit tests in src/ directory
+      - id: run-unit-tests
+        name: Run Unit Tests
+        entry: python -m unittest discover -s src -p "*test*.py" -v
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [commit]
+        verbose: true
