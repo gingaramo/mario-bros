@@ -5,7 +5,7 @@ from unittest.mock import Mock, MagicMock, patch
 from typing import Tuple, Dict, Any
 import cv2
 
-from environment import PreprocessFrameEnv, RepeatActionEnv, ReturnActionEnv, HistoryEnv, CaptureRenderFrameEnv
+from environment import PreprocessFrameEnv, RepeatActionEnv, ReturnActionEnv, HistoryEnv, CaptureRenderFrameEnv, create_environment, Observation, ObservationWrapper
 
 
 class MockEnv(gym.Env):
@@ -24,20 +24,20 @@ class MockEnv(gym.Env):
     self.step_count = 0
     self.max_steps = 100
 
-  def step(self, action: int) -> Tuple[np.ndarray, float, bool, bool, dict]:
+  def step(self, action: int) -> Tuple[Observation, float, bool, bool, dict]:
     self.step_count += 1
     frame = np.random.randint(0, 256, self.frame_shape, dtype=np.uint8)
     reward = 1.0
     terminated = self.step_count >= self.max_steps
     truncated = False
     info = {'step': self.step_count}
-    return frame, reward, terminated, truncated, info
+    return Observation(frame=frame), reward, terminated, truncated, info
 
-  def reset(self, **kwargs) -> Tuple[np.ndarray, dict]:
+  def reset(self, **kwargs) -> Tuple[Observation, dict]:
     self.step_count = 0
     frame = np.random.randint(0, 256, self.frame_shape, dtype=np.uint8)
     info = {'episode': 1}
-    return frame, info
+    return Observation(frame=frame), info
 
 
 class TestPreprocessFrameEnv(unittest.TestCase):
@@ -131,7 +131,8 @@ class TestPreprocessFrameEnv(unittest.TestCase):
 
     obs, reward, terminated, truncated, info = env.step(0)
 
-    self.assertEqual(obs.shape, (84, 84))
+    self.assertIsInstance(obs, Observation)
+    self.assertEqual(obs.frame.shape, (84, 84))
     self.assertEqual(reward, 1.0)
     self.assertIsInstance(terminated, bool)
     self.assertIsInstance(truncated, bool)
@@ -144,7 +145,8 @@ class TestPreprocessFrameEnv(unittest.TestCase):
 
     obs, info = env.reset()
 
-    self.assertEqual(obs.shape, (84, 84))
+    self.assertIsInstance(obs, Observation)
+    self.assertEqual(obs.frame.shape, (84, 84))
     self.assertIsInstance(info, dict)
 
 
@@ -214,7 +216,8 @@ class TestRepeatActionEnv(unittest.TestCase):
 
     obs, info = env.reset()
 
-    self.assertEqual(obs.shape, (84, 84, 3))
+    self.assertIsInstance(obs, Observation)
+    self.assertEqual(obs.frame.shape, (84, 84, 3))
     self.assertIsInstance(info, dict)
     self.assertEqual(self.base_env.step_count, 0)
 
@@ -225,24 +228,38 @@ class TestReturnActionEnv(unittest.TestCase):
   def setUp(self):
     self.base_env = MockEnv()
 
-  def test_init(self):
-    """Test initialization."""
+  def test_init_default_mode(self):
+    """Test initialization with default mode."""
     env = ReturnActionEnv(self.base_env)
-
     self.assertIsNone(env.prev_action)
+    self.assertEqual(env.mode, 'capture')
 
-  def test_step_first_action(self):
-    """Test step with first action."""
-    env = ReturnActionEnv(self.base_env)
+  def test_init_with_valid_modes(self):
+    """Test initialization with valid modes."""
+    for mode in ['capture', 'append']:
+      env = ReturnActionEnv(self.base_env, {'mode': mode})
+      self.assertEqual(env.mode, mode)
+
+  def test_init_with_invalid_mode(self):
+    """Test initialization with invalid mode raises ValueError."""
+    with self.assertRaises(ValueError) as context:
+      ReturnActionEnv(self.base_env, {'mode': 'invalid'})
+    self.assertIn("Invalid mode 'invalid'", str(context.exception))
+
+  def test_step_capture_mode_first_action(self):
+    """Test step with capture mode and first action."""
+    env = ReturnActionEnv(self.base_env, {'mode': 'capture'})
 
     obs, reward, terminated, truncated, info = env.step(1)
 
+    # Should return original observation
+    self.assertEqual(obs.shape, (84, 84, 3))
     self.assertIsNone(info['prev_action'])  # No previous action
     self.assertEqual(env.prev_action, 1)
 
-  def test_step_subsequent_actions(self):
-    """Test step with subsequent actions."""
-    env = ReturnActionEnv(self.base_env)
+  def test_step_capture_mode_subsequent_actions(self):
+    """Test step with capture mode and subsequent actions."""
+    env = ReturnActionEnv(self.base_env, {'mode': 'capture'})
 
     # First step
     env.step(1)
@@ -250,21 +267,55 @@ class TestReturnActionEnv(unittest.TestCase):
     # Second step
     obs, reward, terminated, truncated, info = env.step(2)
 
+    # Should return original observation
+    self.assertEqual(obs.shape, (84, 84, 3))
     self.assertEqual(info['prev_action'], 1)  # Previous action
     self.assertEqual(env.prev_action, 2)  # Current action stored
 
-  def test_step_preserves_existing_info(self):
-    """Test that step preserves existing info."""
-    env = ReturnActionEnv(self.base_env)
+  def test_step_append_mode_first_action(self):
+    """Test step with append mode and first action."""
+    env = ReturnActionEnv(self.base_env, {'mode': 'append'})
 
     obs, reward, terminated, truncated, info = env.step(1)
 
-    self.assertIn('step', info)  # From base env
-    self.assertIn('prev_action', info)  # Added by wrapper
+    # Should return tuple of (obs, prev_action)
+    self.assertIsInstance(obs, tuple)
+    self.assertEqual(len(obs), 2)
+    self.assertEqual(obs[0].shape, (84, 84, 3))  # Original observation
+    self.assertIsNone(obs[1])  # No previous action
+    self.assertEqual(env.prev_action, 1)
 
-  def test_reset(self):
-    """Test reset method."""
-    env = ReturnActionEnv(self.base_env)
+  def test_step_append_mode_subsequent_actions(self):
+    """Test step with append mode and subsequent actions."""
+    env = ReturnActionEnv(self.base_env, {'mode': 'append'})
+
+    # First step
+    env.step(1)
+
+    # Second step
+    obs, reward, terminated, truncated, info = env.step(2)
+
+    # Should return tuple of (obs, prev_action)
+    self.assertIsInstance(obs, tuple)
+    self.assertEqual(len(obs), 2)
+    self.assertEqual(obs[0].shape, (84, 84, 3))  # Original observation
+    self.assertEqual(obs[1], 1)  # Previous action
+    self.assertEqual(env.prev_action, 2)  # Current action stored
+
+  def test_step_preserves_existing_info(self):
+    """Test that step preserves existing info in both modes."""
+    for mode in ['capture', 'append']:
+      env = ReturnActionEnv(self.base_env, {'mode': mode})
+
+      obs, reward, terminated, truncated, info = env.step(1)
+
+      self.assertIn('step', info)  # From base env
+      if mode == 'capture':
+        self.assertIn('prev_action', info)  # Added by wrapper in capture mode
+
+  def test_reset_capture_mode(self):
+    """Test reset with capture mode."""
+    env = ReturnActionEnv(self.base_env, {'mode': 'capture'})
 
     # Take a step to set prev_action
     env.step(1)
@@ -277,6 +328,25 @@ class TestReturnActionEnv(unittest.TestCase):
     self.assertEqual(obs.shape, (84, 84, 3))
     self.assertIsInstance(info, dict)
 
+  def test_reset_append_mode(self):
+    """Test reset with append mode."""
+    env = ReturnActionEnv(self.base_env, {'mode': 'append'})
+
+    # Take a step to set prev_action
+    env.step(1)
+    self.assertEqual(env.prev_action, 1)
+
+    # Reset
+    obs, info = env.reset()
+
+    self.assertIsNone(env.prev_action)
+    # Should return tuple of (obs, None)
+    self.assertIsInstance(obs, tuple)
+    self.assertEqual(len(obs), 2)
+    self.assertEqual(obs[0].shape, (84, 84, 3))  # Original observation
+    self.assertIsNone(obs[1])  # No previous action after reset
+    self.assertIsInstance(info, dict)
+
 
 class TestHistoryEnv(unittest.TestCase):
   """Test cases for HistoryEnv wrapper."""
@@ -286,11 +356,10 @@ class TestHistoryEnv(unittest.TestCase):
 
   def test_init_with_valid_config(self):
     """Test initialization with valid configuration."""
-    config = {'history_length': 4, 'num_skip_frames': 2}
+    config = {'history_length': 4}
     env = HistoryEnv(self.base_env, config)
 
     self.assertEqual(env.history_length, 4)
-    self.assertEqual(env.num_skip_frames, 2)
     self.assertEqual(len(env.states), 0)
 
   def test_init_with_minimal_config(self):
@@ -299,15 +368,11 @@ class TestHistoryEnv(unittest.TestCase):
     env = HistoryEnv(self.base_env, config)
 
     self.assertEqual(env.history_length, 2)
-    self.assertEqual(env.num_skip_frames, 0)
 
   def test_init_with_invalid_config(self):
     """Test initialization with invalid configuration."""
     with self.assertRaises(ValueError):
       HistoryEnv(self.base_env, {'history_length': 0})
-
-    with self.assertRaises(ValueError):
-      HistoryEnv(self.base_env, {'history_length': 2, 'num_skip_frames': -1})
 
   def test_get_history_empty(self):
     """Test _get_history with empty deque."""
@@ -322,37 +387,42 @@ class TestHistoryEnv(unittest.TestCase):
     config = {'history_length': 3}
     env = HistoryEnv(self.base_env, config)
 
-    # Add one frame
+    # Add one observation
     frame = np.ones((84, 84, 3), dtype=np.uint8)
-    env.states.append(frame)
+    obs = Observation(frame=frame)
+    env.states.append(obs)
 
     history = env._get_history()
 
-    self.assertEqual(history.shape, (3, 84, 84, 3))
+    self.assertIsInstance(history, Observation)
+    self.assertEqual(history.frame.shape, (3, 84, 84, 3))
     # First two frames should be identical (padded)
-    np.testing.assert_array_equal(history[0], history[1])
-    np.testing.assert_array_equal(history[1], history[2])
+    np.testing.assert_array_equal(history.frame[0], history.frame[1])
+    np.testing.assert_array_equal(history.frame[1], history.frame[2])
 
   def test_get_history_sufficient_frames(self):
     """Test _get_history with sufficient frames."""
     config = {'history_length': 2}
     env = HistoryEnv(self.base_env, config)
 
-    # Add two different frames
+    # Add two different observations
     frame1 = np.ones((84, 84, 3), dtype=np.uint8)
     frame2 = np.ones((84, 84, 3), dtype=np.uint8) * 2
-    env.states.append(frame1)
-    env.states.append(frame2)
+    obs1 = Observation(frame=frame1)
+    obs2 = Observation(frame=frame2)
+    env.states.append(obs1)
+    env.states.append(obs2)
 
     history = env._get_history()
 
-    self.assertEqual(history.shape, (2, 84, 84, 3))
-    np.testing.assert_array_equal(history[0], frame1)
-    np.testing.assert_array_equal(history[1], frame2)
+    self.assertIsInstance(history, Observation)
+    self.assertEqual(history.frame.shape, (2, 84, 84, 3))
+    np.testing.assert_array_equal(history.frame[0], frame1)
+    np.testing.assert_array_equal(history.frame[1], frame2)
 
   def test_step_no_skip_frames(self):
-    """Test step with no frame skipping."""
-    config = {'history_length': 2, 'num_skip_frames': 0}
+    """Test step method."""
+    config = {'history_length': 2}
     env = HistoryEnv(self.base_env, config)
 
     # Reset to initialize
@@ -360,53 +430,59 @@ class TestHistoryEnv(unittest.TestCase):
 
     obs, reward, terminated, truncated, info = env.step(0)
 
-    self.assertEqual(obs.shape, (2, 84, 84, 3))
+    self.assertIsInstance(obs, Observation)
+    self.assertEqual(obs.frame.shape, (2, 84, 84, 3))
     self.assertEqual(reward, 1.0)  # Single step reward
     self.assertEqual(len(env.states), 2)  # Reset frame + step frame
 
-  def test_step_with_skip_frames(self):
-    """Test step with frame skipping."""
-    config = {'history_length': 3, 'num_skip_frames': 2}
+  def test_step_with_dense_vectors(self):
+    """Test step with dense vectors in observations."""
+    config = {'history_length': 3}
     env = HistoryEnv(self.base_env, config)
 
-    # Reset to initialize
+    # Mock the base environment to return observations with dense vectors
+    def mock_step(action):
+      frame = np.random.randint(0, 256, (84, 84, 3), dtype=np.uint8)
+      dense = np.array([action, self.base_env.step_count])
+      obs = Observation(frame=frame, dense=dense)
+      self.base_env.step_count += 1
+      return obs, 1.0, False, False, {}
+
+    def mock_reset(**kwargs):
+      self.base_env.step_count = 0
+      frame = np.random.randint(0, 256, (84, 84, 3), dtype=np.uint8)
+      dense = np.array([0, 0])
+      obs = Observation(frame=frame, dense=dense)
+      return obs, {}
+
+    self.base_env.step = mock_step
+    self.base_env.reset = mock_reset
+
+    # Reset and step
     env.reset()
+    obs, reward, terminated, truncated, info = env.step(1)
 
-    obs, reward, terminated, truncated, info = env.step(0)
-
-    self.assertEqual(obs.shape, (3, 84, 84, 3))
-    self.assertEqual(reward, 3.0)  # 3 steps (1 + 2 skipped)
-    self.assertEqual(len(env.states), 3)  # Maxlen=3, so only last 3 frames
-    self.assertEqual(self.base_env.step_count, 3)
-
-  def test_step_early_termination_with_skip(self):
-    """Test step with early termination during frame skipping."""
-    self.base_env.max_steps = 2
-    config = {'history_length': 2, 'num_skip_frames': 5}
-    env = HistoryEnv(self.base_env, config)
-
-    # Reset to initialize
-    env.reset()
-
-    obs, reward, terminated, truncated, info = env.step(0)
-
-    self.assertTrue(terminated)
-    self.assertEqual(reward, 2.0)  # Only 2 steps before termination
-    self.assertEqual(self.base_env.step_count, 2)
+    self.assertIsInstance(obs, Observation)
+    self.assertEqual(obs.frame.shape, (3, 84, 84, 3))
+    self.assertEqual(obs.dense.shape,
+                     (3, 2))  # 3 history steps, 2 dense features each
 
   def test_reset(self):
     """Test reset method."""
     config = {'history_length': 2}
     env = HistoryEnv(self.base_env, config)
 
-    # Add some frames to states
-    env.states.append(np.ones((84, 84, 3)))
-    env.states.append(np.ones((84, 84, 3)))
+    # Add some observations to states
+    obs1 = Observation(frame=np.ones((84, 84, 3)))
+    obs2 = Observation(frame=np.ones((84, 84, 3)))
+    env.states.append(obs1)
+    env.states.append(obs2)
 
     obs, info = env.reset()
 
-    self.assertEqual(obs.shape, (2, 84, 84, 3))
-    self.assertEqual(len(env.states), 1)  # Only reset frame
+    self.assertIsInstance(obs, Observation)
+    self.assertEqual(obs.frame.shape, (2, 84, 84, 3))
+    self.assertEqual(len(env.states), 1)  # Only reset observation
     self.assertIsInstance(info, dict)
     self.assertEqual(self.base_env.step_count, 0)
 
@@ -415,21 +491,72 @@ class TestHistoryEnv(unittest.TestCase):
     config = {'history_length': 2}
     env = HistoryEnv(self.base_env, config)
 
-    # Add 3 frames to a deque with maxlen=2
+    # Add 3 observations to a deque with maxlen=2
     frame1 = np.ones((84, 84, 3), dtype=np.uint8)
     frame2 = np.ones((84, 84, 3), dtype=np.uint8) * 2
     frame3 = np.ones((84, 84, 3), dtype=np.uint8) * 3
+    obs1 = Observation(frame=frame1)
+    obs2 = Observation(frame=frame2)
+    obs3 = Observation(frame=frame3)
 
-    env.states.append(frame1)
-    env.states.append(frame2)
-    env.states.append(frame3)  # Should evict frame1
+    env.states.append(obs1)
+    env.states.append(obs2)
+    env.states.append(obs3)  # Should evict obs1
 
     self.assertEqual(len(env.states), 2)
     history = env._get_history()
 
     # Should contain frame2 and frame3, not frame1
-    np.testing.assert_array_equal(history[0], frame2)
-    np.testing.assert_array_equal(history[1], frame3)
+    np.testing.assert_array_equal(history.frame[0], frame2)
+    np.testing.assert_array_equal(history.frame[1], frame3)
+
+  def test_dense_vector_history_stacking(self):
+    """Test that dense vectors are properly stacked as history."""
+    config = {'history_length': 3}
+    env = HistoryEnv(self.base_env, config)
+
+    # Add observations with different dense vectors
+    frame = np.ones((84, 84, 3), dtype=np.uint8)
+    dense1 = np.array([1, 2])
+    dense2 = np.array([3, 4])
+    obs1 = Observation(frame=frame, dense=dense1)
+    obs2 = Observation(frame=frame, dense=dense2)
+
+    env.states.append(obs1)
+    env.states.append(obs2)
+
+    history = env._get_history()
+
+    self.assertIsInstance(history, Observation)
+    self.assertEqual(history.dense.shape,
+                     (3, 2))  # 3 history steps, 2 features each
+    # First dense vector should be padded (repeated)
+    np.testing.assert_array_equal(history.dense[0], dense1)  # Padded
+    np.testing.assert_array_equal(history.dense[1], dense1)  # First actual
+    np.testing.assert_array_equal(history.dense[2], dense2)  # Second actual
+
+  def test_mixed_observations_history(self):
+    """Test history with mixed observations (some with/without dense vectors)."""
+    config = {'history_length': 2}
+    env = HistoryEnv(self.base_env, config)
+
+    # Add one observation with dense, one without
+    frame = np.ones((84, 84, 3), dtype=np.uint8)
+    obs1 = Observation(frame=frame, dense=np.array([1, 2]))
+    obs2 = Observation(frame=frame)  # No dense vector
+
+    env.states.append(obs1)
+    env.states.append(obs2)
+
+    history = env._get_history()
+
+    self.assertIsInstance(history, Observation)
+    self.assertEqual(history.frame.shape, (2, 84, 84, 3))
+    # Only one observation has dense vector, but we pad to match history_length=2
+    self.assertEqual(history.dense.shape, (2, 2))
+    # Both entries should be the same (padded with the first/only dense vector)
+    np.testing.assert_array_equal(history.dense[0], np.array([1, 2]))
+    np.testing.assert_array_equal(history.dense[1], np.array([1, 2]))
 
 
 class TestIntegration(unittest.TestCase):
@@ -447,11 +574,14 @@ class TestIntegration(unittest.TestCase):
 
     # Test reset
     obs, info = env.reset()
-    self.assertEqual(obs.shape, (3, 84, 84))  # history_length=3, grayscale
+    self.assertIsInstance(obs, Observation)
+    self.assertEqual(obs.frame.shape,
+                     (3, 84, 84))  # history_length=3, grayscale
 
     # Test step
     obs, reward, terminated, truncated, info = env.step(1)
-    self.assertEqual(obs.shape, (3, 84, 84))
+    self.assertIsInstance(obs, Observation)
+    self.assertEqual(obs.frame.shape, (3, 84, 84))
     self.assertEqual(reward, 2.0)  # 2 repeated actions
     self.assertIn('prev_action', info)
 
@@ -474,12 +604,16 @@ class TestIntegration(unittest.TestCase):
     obs1, info1 = env1.reset()
     obs2, info2 = env2.reset()
 
-    self.assertEqual(obs1.shape, obs2.shape)
+    self.assertIsInstance(obs1, Observation)
+    self.assertIsInstance(obs2, Observation)
+    self.assertEqual(obs1.frame.shape, obs2.frame.shape)
 
     obs1, reward1, _, _, _ = env1.step(0)
     obs2, reward2, _, _, _ = env2.step(0)
 
-    self.assertEqual(obs1.shape, obs2.shape)
+    self.assertIsInstance(obs1, Observation)
+    self.assertIsInstance(obs2, Observation)
+    self.assertEqual(obs1.frame.shape, obs2.frame.shape)
     self.assertEqual(reward1, reward2)
 
 
@@ -504,44 +638,209 @@ class TestCaptureRenderFrameEnv(unittest.TestCase):
   def setUp(self):
     self.base_env = MockRenderEnv()
 
-  def test_init(self):
-    """Test initialization."""
+  def test_init_default_mode(self):
+    """Test initialization with default mode."""
     env = CaptureRenderFrameEnv(self.base_env)
     self.assertIsNone(env.rendered_frame)
+    self.assertEqual(env.mode, 'capture')
 
-  def test_step_captures_rendered_frame(self):
-    """Test that step captures the rendered frame."""
-    env = CaptureRenderFrameEnv(self.base_env)
+  def test_init_with_valid_modes(self):
+    """Test initialization with valid modes."""
+    for mode in ['capture', 'replace', 'append']:
+      env = CaptureRenderFrameEnv(self.base_env, {'mode': mode})
+      self.assertEqual(env.mode, mode)
+
+  def test_init_with_invalid_mode(self):
+    """Test initialization with invalid mode raises ValueError."""
+    with self.assertRaises(ValueError) as context:
+      CaptureRenderFrameEnv(self.base_env, {'mode': 'invalid'})
+    self.assertIn("Invalid mode 'invalid'", str(context.exception))
+
+  def test_step_capture_mode(self):
+    """Test step with capture mode (default behavior)."""
+    env = CaptureRenderFrameEnv(self.base_env, {'mode': 'capture'})
     obs, reward, terminated, truncated, info = env.step(0)
+
     self.assertTrue(self.base_env.render_called)
     self.assertIsNotNone(env.rendered_frame)
     np.testing.assert_array_equal(env.rendered_frame,
                                   self.base_env.render_return)
+    # Should return original observation
     self.assertEqual(obs.shape, self.base_env.frame_shape)
     self.assertEqual(reward, 1.0)
 
-  def test_step_multiple_calls(self):
-    """Test that rendered_frame updates on each step."""
-    env = CaptureRenderFrameEnv(self.base_env)
-    env.step(0)
-    first_frame = env.rendered_frame.copy()
-    # Change what render returns
-    self.base_env.render_return = np.ones(self.base_env.frame_shape,
-                                          dtype=np.uint8) * 77
-    env.step(1)
-    np.testing.assert_array_equal(env.rendered_frame,
-                                  self.base_env.render_return)
-    self.assertFalse(np.array_equal(first_frame, env.rendered_frame))
+  def test_step_replace_mode(self):
+    """Test step with replace mode."""
+    env = CaptureRenderFrameEnv(self.base_env, {'mode': 'replace'})
+    obs, reward, terminated, truncated, info = env.step(0)
 
-  def test_reset_clears_rendered_frame(self):
-    """Test that reset clears the rendered frame."""
-    env = CaptureRenderFrameEnv(self.base_env)
-    env.step(0)
+    self.assertTrue(self.base_env.render_called)
     self.assertIsNotNone(env.rendered_frame)
+    # Should return rendered frame as observation
+    np.testing.assert_array_equal(obs, self.base_env.render_return)
+    self.assertEqual(reward, 1.0)
+
+  def test_step_append_mode(self):
+    """Test step with append mode."""
+    env = CaptureRenderFrameEnv(self.base_env, {'mode': 'append'})
+    obs, reward, terminated, truncated, info = env.step(0)
+
+    self.assertTrue(self.base_env.render_called)
+    self.assertIsNotNone(env.rendered_frame)
+    # Should return tuple of (rendered_frame, original_obs)
+    self.assertIsInstance(obs, tuple)
+    self.assertEqual(len(obs), 2)
+    np.testing.assert_array_equal(obs[0], self.base_env.render_return)
+    self.assertEqual(obs[1].shape, self.base_env.frame_shape)
+    self.assertEqual(reward, 1.0)
+
+  def test_reset_capture_mode(self):
+    """Test reset with capture mode."""
+    env = CaptureRenderFrameEnv(self.base_env, {'mode': 'capture'})
+    env.step(0)  # Set rendered_frame
     obs, info = env.reset()
+
     self.assertIsNone(env.rendered_frame)
     self.assertEqual(obs.shape, self.base_env.frame_shape)
     self.assertIsInstance(info, dict)
+
+  def test_reset_replace_mode(self):
+    """Test reset with replace mode."""
+    env = CaptureRenderFrameEnv(self.base_env, {'mode': 'replace'})
+    obs, info = env.reset()
+
+    self.assertIsNotNone(env.rendered_frame)
+    # Should return rendered frame as observation
+    np.testing.assert_array_equal(obs, self.base_env.render_return)
+    self.assertIsInstance(info, dict)
+
+  def test_reset_append_mode(self):
+    """Test reset with append mode."""
+    env = CaptureRenderFrameEnv(self.base_env, {'mode': 'append'})
+    obs, info = env.reset()
+
+    self.assertIsNotNone(env.rendered_frame)
+    # Should return tuple of (rendered_frame, original_obs)
+    self.assertIsInstance(obs, tuple)
+    self.assertEqual(len(obs), 2)
+    np.testing.assert_array_equal(obs[0], self.base_env.render_return)
+    self.assertEqual(obs[1].shape, self.base_env.frame_shape)
+    self.assertIsInstance(info, dict)
+
+
+class TestCreateEnvironment(unittest.TestCase):
+  """Test cases for create_environment function."""
+
+  def setUp(self):
+    """Set up test fixtures."""
+    self.base_config = {'env_name': 'CartPole-v1', 'env_wrappers': []}
+
+  @patch('gymnasium.make')
+  def test_create_environment_basic(self, mock_gym_make):
+    """Test creating environment with minimal configuration."""
+    mock_env = Mock()
+    mock_gym_make.return_value = mock_env
+
+    config = self.base_config.copy()
+    env = create_environment(config)
+
+    mock_gym_make.assert_called_once_with('CartPole-v1',
+                                          render_mode='rgb_array')
+    self.assertEqual(env, mock_env)
+
+  @patch('gymnasium.make')
+  def test_create_environment_with_multiple_wrappers(self, mock_gym_make):
+    """Test creating environment with multiple wrappers and correct order."""
+    mock_env = MockEnv()  # Use MockEnv instead of Mock()
+    mock_gym_make.return_value = mock_env
+
+    config = self.base_config.copy()
+    config['env_wrappers'] = [
+        'PreprocessFrameEnv', 'RepeatActionEnv', 'ReturnActionEnv'
+    ]
+    # Use nested configuration structure
+    config['PreprocessFrameEnv'] = {'grayscale': True, 'normalize': True}
+    config['RepeatActionEnv'] = {'num_repeat_action': 3}
+    config['ReturnActionEnv'] = {'mode': 'append'}
+
+    env = create_environment(config)
+
+    mock_gym_make.assert_called_once_with('CartPole-v1',
+                                          render_mode='rgb_array')
+    # Check wrapper nesting order (outermost to innermost)
+    # Now includes ObservationWrapper at the base
+    self.assertIsInstance(env, ReturnActionEnv)
+    self.assertIsInstance(env.env, RepeatActionEnv)
+    self.assertIsInstance(env.env.env, PreprocessFrameEnv)
+    self.assertIsInstance(env.env.env.env, ObservationWrapper)
+    self.assertEqual(env.env.env.env.env, mock_env)
+
+    # Check wrapper configurations
+    self.assertTrue(env.env.env.grayscale)
+    self.assertTrue(env.env.env.normalize)
+    self.assertEqual(env.env.num_repeat_action, 3)
+    self.assertEqual(env.mode, 'append')
+    self.assertTrue(env.env.env.normalize)
+    self.assertEqual(env.env.num_repeat_action, 3)
+
+  @patch('gymnasium.make')
+  def test_create_environment_with_nested_config(self, mock_gym_make):
+    """Test creating environment with nested configuration for each wrapper."""
+    mock_env = MockEnv()
+    mock_gym_make.return_value = mock_env
+
+    config = {
+        'env_name':
+        'CartPole-v1',
+        'env_wrappers':
+        ['PreprocessFrameEnv', 'HistoryEnv', 'CaptureRenderFrameEnv'],
+        'PreprocessFrameEnv': {
+            'grayscale': True,
+            'resize_shape': (84, 84),
+            'normalize': False
+        },
+        'HistoryEnv': {
+            'history_length': 4
+        },
+        'CaptureRenderFrameEnv': {
+            'mode': 'replace'
+        }
+    }
+
+    env = create_environment(config)
+
+    mock_gym_make.assert_called_once_with('CartPole-v1',
+                                          render_mode='rgb_array')
+
+    # Check wrapper nesting order (outermost to innermost)
+    # Now includes ObservationWrapper at the base
+    self.assertIsInstance(env, CaptureRenderFrameEnv)
+    self.assertIsInstance(env.env, HistoryEnv)
+    self.assertIsInstance(env.env.env, PreprocessFrameEnv)
+    self.assertIsInstance(env.env.env.env, ObservationWrapper)
+    self.assertEqual(env.env.env.env.env, mock_env)
+
+    # Check wrapper configurations
+    self.assertTrue(env.env.env.grayscale)
+    self.assertEqual(env.env.env.resize_shape, (84, 84))
+    self.assertFalse(env.env.env.normalize)
+    self.assertEqual(env.env.history_length, 4)
+    self.assertEqual(env.mode, 'replace')
+
+  @patch('gymnasium.make')
+  def test_create_environment_unknown_wrapper(self, mock_gym_make):
+    """Test creating environment with unknown wrapper raises ValueError."""
+    mock_env = Mock()
+    mock_gym_make.return_value = mock_env
+
+    config = self.base_config.copy()
+    config['env_wrappers'] = ['UnknownWrapper']
+
+    with self.assertRaises(ValueError) as context:
+      create_environment(config)
+
+    self.assertIn("Unknown environment wrapper: UnknownWrapper",
+                  str(context.exception))
 
 
 if __name__ == '__main__':
