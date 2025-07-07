@@ -2,6 +2,7 @@ import gymnasium as gym
 from typing import Tuple, Optional, List
 from collections import deque
 import cv2
+import torch
 import numpy as np
 
 
@@ -27,7 +28,7 @@ class Observation(object):
   Example usage:
     obs = env.step(action)
     assert isinstance(obs, Observation)
-    q_pred = model(obs.frame, obs.dense)
+    q_pred = model(obs.as_input())
   """
 
   def __init__(self,
@@ -73,6 +74,22 @@ class Observation(object):
     return f"Observation(frame={self.frame.shape if self.frame is not None else None}, " \
            f"dense={self.dense.shape if self.dense is not None else None})"
 
+  def as_input(self, device: torch.device) -> List[torch.Tensor]:
+    """
+    Returns the observation as a pair of numpy arrays suitable for model input.
+
+    Returns:
+      List containing the frame and dense vector, using an empty vector in lieu of any missing component.
+    """
+    inputs = [
+        torch.empty(0) if self.frame is None else self.frame,
+        torch.empty(0) if self.dense is None else self.dense
+    ]
+    return [
+        torch.tensor(input, device=device, dtype=torch.float32)
+        for input in inputs
+    ]
+
 
 class ObservationWrapper(gym.Wrapper):
   """
@@ -81,8 +98,13 @@ class ObservationWrapper(gym.Wrapper):
   This wrapper is useful for environments that return either a pixel-frame or a dense vector,
   or both, allowing for a consistent interface across different environments.
 
+  The wrapper converts raw environment observations (numpy arrays) into Observation objects
+  based on the configured input type.
+
   config options:
-    - input ; str ; "frame", "dense"
+    - input: str; "frame" (default) or "dense"
+      - "frame": Treats environment output as pixel frames
+      - "dense": Treats environment output as dense vectors
   """
 
   def __init__(self, env: gym.Env, config: dict) -> None:
@@ -93,13 +115,31 @@ class ObservationWrapper(gym.Wrapper):
           f"Invalid input type '{self.input_type}'. Must be 'frame' or 'dense'."
       )
 
+  def to_observation(self, obs: np.ndarray) -> Observation:
+    """
+    Converts a raw environment observation to an Observation object.
+    
+    Args:
+      obs: Raw observation array from the environment
+      
+    Returns:
+      Observation object with the array placed in either frame or dense field
+      based on the configured input_type
+    """
+    if self.input_type == 'dense':
+      return Observation(frame=None, dense=obs)
+    elif self.input_type == 'frame':
+      return Observation(frame=obs, dense=None)
+
   def step(self, action: int) -> Tuple[Observation, float, bool, bool, dict]:
-    frame, reward, terminated, truncated, info = self.env.step(action)
-    return Observation(frame=frame), reward, terminated, truncated, info
+    obs, reward, terminated, truncated, info = self.env.step(action)
+
+    return self.to_observation(obs), reward, terminated, truncated, info
 
   def reset(self, **kwargs) -> Tuple[Observation, dict]:
-    frame, info = self.env.reset(**kwargs)
-    return Observation(frame=frame), info
+    obs, info = self.env.reset(**kwargs)
+
+    return self.to_observation(obs), info
 
 
 class PreprocessFrameEnv(gym.Wrapper):
@@ -149,18 +189,15 @@ class PreprocessFrameEnv(gym.Wrapper):
 
   def step(self, action: int) -> Tuple[Observation, float, bool, bool, dict]:
     obs, reward, terminated, truncated, info = self.env.step(action)
-    # Process existing frame if it exists
-    processed_frame = self.preprocess(
-        obs.frame) if obs.frame is not None else None
-    return Observation(frame=processed_frame,
+    assert obs.frame is not None
+    return Observation(frame=self.preprocess(obs.frame),
                        dense=obs.dense), reward, terminated, truncated, info
 
   def reset(self, **kwargs) -> Tuple[Observation, dict]:
     obs, info = self.env.reset(**kwargs)
-    # Process existing frame if it exists
-    processed_frame = self.preprocess(
-        obs.frame) if obs.frame is not None else None
-    return Observation(frame=processed_frame, dense=obs.dense), info
+
+    assert obs.frame is not None
+    return Observation(frame=self.preprocess(obs.frame), dense=obs.dense), info
 
 
 class RepeatActionEnv(gym.Wrapper):
@@ -193,63 +230,50 @@ class RepeatActionEnv(gym.Wrapper):
     return obs, total_reward, terminated, truncated, info
 
   def reset(self, **kwargs) -> Tuple[Observation, dict]:
-    return self.env.reset(**kwargs)
+    obs, info = self.env.reset(**kwargs)
+
+    return obs, info
 
 
 class ReturnActionEnv(gym.Wrapper):
   """
-  Manages the previous action information.
+  Appends the current action to the observation's dense vector.
+
+  This wrapper takes the action that was just performed and appends it to the dense
+  vector of the resulting observation. This allows the agent to have access to the
+  action that led to the current state.
 
   config options:
-    - mode: str ; "capture" (default) or "append"
-      - "capture": Stores previous action in info dict
-      - "append": Returns tuple of (obs, prev_action) as observation
+    - mode: str ; "append" (default and only supported mode)
+      - "append": Appends the current action as a dense parameter to the observation
   """
-
-  prev_action: Optional[int]
 
   def __init__(self, env: gym.Env, config: dict = None) -> None:
     super().__init__(env)
-    self.prev_action = None
     config = config or {}
-    self.mode = config.get('mode', 'capture')
-    if self.mode not in ['capture', 'append']:
-      raise ValueError(
-          f"Invalid mode '{self.mode}'. Must be 'capture' or 'append'")
+    self.mode = config.get('mode', 'append')
+    if self.mode not in ['append']:
+      raise ValueError(f"Invalid mode '{self.mode}'. Must be 'append'")
 
   def step(self, action: int) -> Tuple[Observation, float, bool, bool, dict]:
     obs, reward, terminated, truncated, info = self.env.step(action)
-    info = dict(info) if info is not None else {}
 
-    if self.mode == 'capture':
-      info['prev_action'] = self.prev_action
-      self.prev_action = action
-      return obs, reward, terminated, truncated, info
-    else:  # mode == 'append'
-      prev_action_to_return = self.prev_action
-      self.prev_action = action
-      # Create new observation with dense vector containing previous action
+    if self.mode == 'append':
+      # Create new observation with dense vector containing current action
       if obs.dense is not None:
-        # Append previous action to existing dense vector
-        prev_action_array = np.array(
-            [prev_action_to_return]
-            if prev_action_to_return is not None else [0])
-        new_dense = np.concatenate([obs.dense, prev_action_array])
+        # Append current action to existing dense vector
+        new_dense = np.concatenate((obs.dense, np.array([action])))
       else:
-        # Create dense vector with just previous action
-        new_dense = np.array([prev_action_to_return]
-                             if prev_action_to_return is not None else [0])
+        # Create dense vector with just current action
+        new_dense = np.array([action])
       return Observation(frame=obs.frame,
                          dense=new_dense), reward, terminated, truncated, info
 
   def reset(self, **kwargs) -> Tuple[Observation, dict]:
     obs, info = self.env.reset(**kwargs)
-    self.prev_action = None
 
-    if self.mode == 'capture':
-      return obs, info
-    else:  # mode == 'append'
-      # Create new observation with dense vector containing None (represented as 0)
+    if self.mode == 'append':
+      # Create new observation with dense vector containing 0 (no previous action yet)
       if obs.dense is not None:
         # Append 0 to existing dense vector to represent no previous action
         new_dense = np.concatenate([obs.dense, np.array([0])])
@@ -316,11 +340,11 @@ class HistoryEnv(gym.Wrapper):
         first_dense = dense_history[0]
         pad_dense = [first_dense for _ in range(num_missing)]
         dense_history = pad_dense + dense_history
-      stacked_dense = np.stack(dense_history, axis=0)
+      flattened_dense = np.concatenate(dense_history)
     else:
-      stacked_dense = None
+      flattened_dense = None
 
-    return Observation(frame=stacked_frames, dense=stacked_dense)
+    return Observation(frame=stacked_frames, dense=flattened_dense)
 
   def step(self, action: int) -> Tuple[Observation, float, bool, bool, dict]:
     obs, reward, terminated, truncated, info = self.env.step(action)
@@ -330,6 +354,7 @@ class HistoryEnv(gym.Wrapper):
   def reset(self, **kwargs) -> Tuple[Observation, dict]:
     self.states.clear()
     obs, info = self.env.reset(**kwargs)
+
     self.states.append(obs)
     return self._get_history(), info
 
@@ -343,10 +368,10 @@ class CaptureRenderFrameEnv(gym.Wrapper):
   the expected input format for Conv[2D|3D].
 
   config options:
-    - mode: str ; "capture" (default), "replace", or "append"
+    - mode: str ; "capture" (default) or "replace"
       - "capture": Only captures frame, returns original observation
-      - "replace": Returns rendered frame as the observation
-      - "append": Returns tuple of (rendered_frame, original_obs)
+      - "replace": Returns rendered frame as the observation, ignores original observation
+      - "append": Appends rendered frame to the original observation (not implemented)
   """
 
   def __init__(self, env: gym.Env, config: dict = None) -> None:
@@ -354,74 +379,30 @@ class CaptureRenderFrameEnv(gym.Wrapper):
     self.rendered_frame: Optional[np.ndarray] = None
     config = config or {}
     self.mode = config.get('mode', 'capture')
-    if self.mode not in ['capture', 'replace', 'append']:
+    if self.mode not in ['capture', 'replace']:
       raise ValueError(
-          f"Invalid mode '{self.mode}'. Must be 'capture', 'replace', or 'append'"
-      )
+          f"Invalid mode '{self.mode}'. Must be 'capture' or 'replace'")
 
   def step(self, action: int) -> Tuple[Observation, float, bool, bool, dict]:
     obs, reward, terminated, truncated, info = self.env.step(action)
     self.rendered_frame = self.env.render()
+    assert self.rendered_frame is not None
 
     if self.mode == 'replace':
-      # If rendered frame is None, fall back to original observation
-      if self.rendered_frame is not None:
-        return Observation(
-            frame=self.rendered_frame,
-            dense=obs.dense), reward, terminated, truncated, info
-      else:
-        return obs, reward, terminated, truncated, info
-    elif self.mode == 'append':
-      # Combine rendered frame with original observation frame
-      if self.rendered_frame is not None and obs.frame is not None:
-        # Convert rendered frame to (C,H,W) - will be handled by Observation class
-        rendered_obs = Observation(frame=self.rendered_frame)
-        # Stack rendered frame with original frame along channel dimension
-        combined_frame = np.concatenate([rendered_obs.frame, obs.frame],
-                                        axis=0)
-        return Observation(
-            frame=combined_frame,
-            dense=obs.dense), reward, terminated, truncated, info
-      elif self.rendered_frame is not None:
-        # Only rendered frame available
-        return Observation(
-            frame=self.rendered_frame,
-            dense=obs.dense), reward, terminated, truncated, info
-      else:
-        # Fall back to original observation
-        return obs, reward, terminated, truncated, info
-    else:  # mode == 'capture'
-      return obs, reward, terminated, truncated, info
+      return Observation(frame=self.rendered_frame,
+                         dense=None), reward, terminated, truncated, info
+    assert self.mode == 'capture'
+    return obs, reward, terminated, truncated, info
 
   def reset(self, **kwargs) -> Tuple[Observation, dict]:
     obs, info = self.env.reset(**kwargs)
-    self.rendered_frame = None
+
+    self.rendered_frame = self.env.render()
+    assert self.rendered_frame is not None
 
     if self.mode == 'replace':
       # For replace mode, we need to render the initial frame
-      self.rendered_frame = self.env.render()
-      if self.rendered_frame is not None:
-        return Observation(frame=self.rendered_frame, dense=obs.dense), info
-      else:
-        # If rendered frame is None, fall back to original observation
-        return obs, info
-    elif self.mode == 'append':
-      # For append mode, we need to render the initial frame and combine
-      self.rendered_frame = self.env.render()
-
-      if self.rendered_frame is not None and obs.frame is not None:
-        # Convert rendered frame to (C,H,W) - will be handled by Observation class
-        rendered_obs = Observation(frame=self.rendered_frame)
-        # Stack rendered frame with original frame along channel dimension
-        combined_frame = np.concatenate([rendered_obs.frame, obs.frame],
-                                        axis=0)
-        return Observation(frame=combined_frame, dense=obs.dense), info
-      elif self.rendered_frame is not None:
-        # Only rendered frame available
-        return Observation(frame=self.rendered_frame, dense=obs.dense), info
-      else:
-        # Fall back to original observation
-        return obs, info
+      return Observation(frame=self.rendered_frame, dense=None), info
     else:  # mode == 'capture'
       return obs, info
 

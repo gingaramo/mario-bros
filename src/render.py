@@ -132,9 +132,19 @@ def frame_with_q_values(next_state, q_values, action, labels):
   return frame_with_q
 
 
-def render(next_state, q_values, action, labels, recording=None):
+def render(env, q_values, action, labels, recording=None):
   if should_render() or recording:
-    frame = frame_with_q_values(next_state, q_values, action, labels)
+
+    def find_rendered_frame(env):
+      if hasattr(env, 'rendered_frame'):
+        return env.rendered_frame
+      elif hasattr(env, 'env'):
+        return find_rendered_frame(env.env)
+      else:
+        raise ValueError("Environment does not have a rendered frame.")
+
+    frame = find_rendered_frame(env)
+    frame = frame_with_q_values(frame, q_values, action, labels)
   if recording:
     recording.add_frame(frame)
   if should_render():

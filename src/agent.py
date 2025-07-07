@@ -1,3 +1,4 @@
+from typing import Union, Tuple, List
 import numpy as np
 import random
 import torch
@@ -7,6 +8,7 @@ import math
 import os
 from torch.utils.tensorboard import SummaryWriter
 from src.dqn import DQN
+from src.environment import Observation
 from src.state import State
 import pickle
 
@@ -18,8 +20,8 @@ def td_error(q_value: float, reward: float):
 
 class Agent:
 
-  def __init__(self, action_size, device, config):
-    self.action_size = action_size
+  def __init__(self, env, device, config):
+    self.action_size = env.action_space.n
     self.device = device
     self.config = config
 
@@ -27,7 +29,6 @@ class Agent:
     self.replay_every_n_steps = config['replay_every_n_steps']
     self.memory_size = config['memory_size']
     self.memory = []
-    self.memory_error = []  # Remembers error of sample
     self.memory_selection = self.config['memory_selection']
     self.memory_selection_alpha = self.config.get('memory_selection_alpha',
                                                   1.0)
@@ -84,12 +85,12 @@ class Agent:
     # Episode being recorded? Helps avoid state updates and checkpoints
     self.recording = False
 
-    self.state = State(self.device, config['state'])
     if 'dqn' in config['network']:
-      self.model = DQN(action_size, self.state.current(), torch.Tensor([1]),
+      mock_observation, _ = env.reset()
+      self.model = DQN(self.action_size, mock_observation,
                        config['network']['dqn'])
-      self.target_model = DQN(action_size, self.state.current(),
-                              torch.Tensor([1]), config['network']['dqn'])
+      self.target_model = DQN(self.action_size, mock_observation,
+                              config['network']['dqn'])
       if os.path.exists(self.checkpoint_path):
         self.model.load_state_dict(
             torch.load(self.checkpoint_path, map_location=self.device))
@@ -105,69 +106,58 @@ class Agent:
       raise ValueError(
           f"Unsupported optimizer: {config['optimizer']}. Supported: 'adam'.")
 
-  def remember(self, action: int, reward: int, next_state: np.ndarray,
-               done: bool):
+  def remember(self, observation: Observation, action: int, reward: float,
+               next_observation: Observation, done: bool):
     """Stores experience. State gathered from last state sent to act().
     """
-    curr_state = self.state.current().cpu().detach().numpy()
-    next_state = self.state.preprocess(next_state)
-    self.summary_writer.add_scalar('Memory/Size', len(self.memory),
-                                   self.global_step)
-    self.summary_writer.add_scalar('Memory/Reward', reward, self.global_step)
-
-    # Store TD-error for memory
     self.memory.append(
-        (curr_state, self.last_action, action, reward, next_state, done))
-
-    # Prioritize learning from bad more than good experiences.
-    if self.memory_selection == 'uniform':
-      self.memory_error.append(1.0)
-    elif self.memory_selection == 'prioritized':
-      # TODO(gingaramo): Revisit this formula below.
-      q_estimate = reward + self.gamma * torch.argmax(
-          self.target_model(
-              torch.tensor(np.concatenate(
-                  (curr_state[1:], [next_state]), axis=0, dtype=np.float32),
-                           device=self.device),
-              torch.tensor([action], device=self.device))).item() * (not done)
-      self.memory_error.append(
-          td_error(self.last_q_values[action],
-                   q_estimate)**self.memory_selection_alpha)
-    else:
-      raise ValueError(f"Invalid memory_selection {self.memory_selection}")
-    self.summary_writer.add_scalar('Memory/Estimation Error',
-                                   self.memory_error[-1], self.global_step)
+        (observation.as_input(torch.device('cpu')), action, reward,
+         next_observation.as_input(torch.device('cpu')), done))
 
     if len(self.memory) > self.memory_size:
       to_remove = random.randint(0, len(self.memory) - 1)
       self.memory.pop(to_remove)
-      self.memory_error.pop(to_remove)
 
-  def act(self, state: np.ndarray) -> tuple[int, np.ndarray]:
-    """Returns the action to take based on the current state.
-    
+    self.summary_writer.add_scalar('Memory/Size', len(self.memory),
+                                   self.global_step)
+    self.summary_writer.add_scalar('Memory/Reward', reward, self.global_step)
+
+    # Prioritize learning from bad more than good experiences.
+    # TODO: add back
+    # if self.memory_selection == 'uniform':
+    #   self.memory_error.append(1.0)
+    # elif self.memory_selection == 'prioritized':
+    #   # TODO(gingaramo): Revisit this formula below.
+    #   q_estimate = reward + self.gamma * torch.argmax(
+    #       self.target_model(
+    #           torch.tensor(np.concatenate(
+    #               (curr_state[1:], [next_state]), axis=0, dtype=np.float32),
+    #                        device=self.device),
+    #           torch.tensor([action], device=self.device))).item() * (not done)
+    #   self.memory_error.append(
+    #       td_error(self.last_q_values[action],
+    #                q_estimate)**self.memory_selection_alpha)
+    # else:
+    #   raise ValueError(f"Invalid memory_selection {self.memory_selection}")
+    # self.summary_writer.add_scalar('Memory/Estimation Error',
+    #                                self.memory_error[-1], self.global_step)
+
+  def act(self, observation: Observation) -> tuple[int, np.ndarray]:
+    """Returns the action to take based on the current observation.
+
     Returns:
       action: The action to take, either random or based on the model's prediction.
-      act_values: The Q-values predicted by the model for the current state.
+      act_values: The Q-values predicted by the model for the current observation.
     """
-    self.state.add(state)
     if not self.recording:
       # We only update global step when we're training, not recording.
       self.global_step += 1
-    if self.action_repeat_steps and self.last_action != None and self.last_action_repeated < self.action_repeat_steps:
-      self.last_action_repeated += 1
-      # Repeat the last action
-      return self.last_action, self.last_act_values
-    self.last_action_repeated = 0
 
-    action = None
     with torch.no_grad():
-      q_values = self.model(
-          self.state.current().to(self.device),
-          torch.tensor([self.last_action or 0], device=self.device))
-    q_values_np = q_values.cpu().detach().numpy()
-    # "Act values" are q values for most cases but for softmax.
-    act_values = q_values_np
+      q_values = self.model(observation.as_input(self.device))
+      q_values_np = q_values.cpu().detach().numpy()
+      # "Act values" are q values for most cases but for softmax.
+      act_values = q_values_np
 
     if np.random.rand() <= self.epsilon:
       action = random.randrange(self.action_size)
@@ -186,7 +176,6 @@ class Agent:
         raise ValueError(
             f"Unsupported action selection method: {self.action_selection}. Supported: 'softmax', 'max'."
         )
-    self.last_action = action
     self.last_q_values = q_values
     self.last_act_values = act_values
     # Log histogram of act_values (Q-values or softmax probabilities)
@@ -211,68 +200,77 @@ class Agent:
     if self.global_step % self.replay_every_n_steps != 0:
       return
     # Gather ids to fix memory_error later on
-    minibatch_ids = random.choices(range(len(self.memory)),
-                                   weights=self.memory_error,
-                                   k=self.batch_size)
-    if self.memory_selection == 'prioritized':
-      # Compute importance sampling weights, ensuring we scale by the maximum value
-      # to ensure weights correct gradient updates downwards.
-      N_ = float(len(self.memory))
-      td_errors = np.array(self.memory_error, dtype=np.float32)
-      wis_weights = (td_errors.sum() /
-                     (td_errors * N_))**self.memory_selection_beta
-      wis_weights_max = wis_weights.max()
-      wis_weights = torch.tensor(wis_weights[minibatch_ids] / wis_weights_max,
-                                 device=self.device)
+    minibatch_ids = random.choices(range(len(self.memory)), k=self.batch_size)
+    # TODO: add back
+    # if self.memory_selection == 'prioritized':
+    #   # Compute importance sampling weights, ensuring we scale by the maximum value
+    #   # to ensure weights correct gradient updates downwards.
+    #   N_ = float(len(self.memory))
+    #   td_errors = np.array(self.memory_error, dtype=np.float32)
+    #   wis_weights = (td_errors.sum() /
+    #                  (td_errors * N_))**self.memory_selection_beta
+    #   wis_weights_max = wis_weights.max()
+    #   wis_weights = torch.tensor(wis_weights[minibatch_ids] / wis_weights_max,
+    #                              device=self.device)
     # Gather memories from self.memory using indices in minibatch_ids
     minibatch = [self.memory[i] for i in minibatch_ids]
-    all_state, all_last_action, all_action, all_reward, all_next_state, all_done = zip(
+    all_observation, all_action, all_reward, all_next_observation, all_done = zip(
         *minibatch)
 
-    # Convert numpy arrays to tensors and move to device only here
-    all_state = torch.tensor(np.stack(all_state),
-                             dtype=torch.float,
-                             device=self.device)
-    all_last_action = torch.tensor(all_last_action,
-                                   dtype=torch.float,
-                                   device=self.device)
+    def to_input(
+        observations: Tuple[Tuple[torch.Tensor, torch.Tensor], ...]
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+      no_tensor = torch.tensor(())
+      if len(observations[0][0].shape) == 0:
+        all_frames = no_tensor
+      else:
+        all_frames = torch.tensor(np.stack(
+            [observation[0] for observation in observations]),
+                                  dtype=torch.float,
+                                  device=self.device)
+      if len(observations[0][1].shape) == 0:
+        all_dense = no_tensor
+      else:
+        all_dense = torch.tensor(np.stack(
+            [observation[1] for observation in observations]),
+                                 dtype=torch.float,
+                                 device=self.device)
+      return (all_frames, all_dense)
+
+    all_observation = to_input(all_observation)
+    all_next_observation = to_input(all_next_observation)
     all_action = torch.tensor(all_action,
                               dtype=torch.int64,
                               device=self.device)
     all_reward = torch.tensor(all_reward,
                               dtype=torch.float,
                               device=self.device)
-    all_next_state = torch.tensor(np.stack(all_next_state),
-                                  dtype=torch.float).to(
-                                      self.device).unsqueeze(1)
-    all_next_state = torch.concat([all_state[:, 1:, :, :], all_next_state],
-                                  axis=1)
     all_done = torch.tensor(all_done, dtype=torch.bool, device=self.device)
 
     with torch.no_grad():
       # Double DQN is the next line:
-      idx = torch.argmax(self.model(all_next_state, all_action.view(-1, 1)),
+      idx = torch.argmax(self.model(all_next_observation, training=True),
                          dim=1)
       q_next = torch.gather(
-          self.target_model(all_next_state, all_action.view(-1, 1)), 1,
+          self.target_model(all_next_observation, training=True), 1,
           idx.view(-1, 1)).squeeze(1)
       target = all_reward + self.gamma * q_next * (~all_done)
 
-    q_values = self.model(all_state, all_last_action.view(-1, 1))
+    q_values = self.model(all_observation, training=True)
     q_pred = torch.gather(q_values, 1, all_action.view(-1, 1)).squeeze(1)
-    if self.memory_selection == 'prioritized':
-      # Update memory error with new memory error
-      new_memory_error = [
-          td_error(p, t)**self.memory_selection_alpha
-          for p, t in zip(q_pred.flatten().cpu().detach().numpy(),
-                          target.flatten().cpu().detach().numpy())
-      ]
-      for idx, err in zip(minibatch_ids, np.abs(new_memory_error)):
-        self.memory_error[idx] = err
-      per_experience_loss = self.get_loss(reduction='none')(q_pred, target)
-      loss = torch.mean(per_experience_loss * wis_weights)
-    elif self.memory_selection == 'uniform':
-      loss = self.get_loss()(q_pred, target)
+    # if self.memory_selection == 'prioritized':
+    #   # Update memory error with new memory error
+    #   new_memory_error = [
+    #       td_error(p, t)**self.memory_selection_alpha
+    #       for p, t in zip(q_pred.flatten().cpu().detach().numpy(),
+    #                       target.flatten().cpu().detach().numpy())
+    #   ]
+    #   for idx, err in zip(minibatch_ids, np.abs(new_memory_error)):
+    #     self.memory_error[idx] = err
+    #   per_experience_loss = self.get_loss(reduction='none')(q_pred, target)
+    #   loss = torch.mean(per_experience_loss * wis_weights)
+    # elif self.memory_selection == 'uniform':
+    loss = self.get_loss()(q_pred, target)
 
     # Update target model every `target_update_frequency` steps
     self.replays_until_target_update -= 1
@@ -304,8 +302,6 @@ class Agent:
                                    pre_clip_grad_norm, self.global_step)
 
   def episode_begin(self, recording=False):
-    self.last_action = None
-    self.last_action_repeated = 0
     self.recording = recording
 
   def episode_end(self, episode_info):
@@ -316,10 +312,6 @@ class Agent:
                                    self.global_step)
     self.summary_writer.add_scalar("Episode/Reward",
                                    episode_info['total_reward'],
-                                   self.global_step)
-    self.summary_writer.add_scalar("Episode/World", episode_info['world'],
-                                   self.global_step)
-    self.summary_writer.add_scalar("Episode/Stage", episode_info['stage'],
                                    self.global_step)
     self.summary_writer.add_scalar("Episode/Steps", episode_info['steps'],
                                    self.global_step)

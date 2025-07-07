@@ -15,6 +15,7 @@ import numpy as np
 from src.agent import Agent
 from src.recording import Recording
 from src.render import render, set_headless_mode
+from src.environment import create_environment
 
 import ale_py
 from tqdm import tqdm
@@ -38,7 +39,8 @@ def main(args):
     clear_checkpoints(config)
 
   set_headless_mode(config['env'].get('headless', False))
-  env = gym.make(config['env']['env_name'], render_mode='rgb_array')
+  env = create_environment(config['env'])
+
   if 'SuperMario' in config['env']['env_name']:
     # We only apply this for Mario. Other environments are likely just Atari
     # and thus don't need this.
@@ -51,7 +53,8 @@ def main(args):
   print(f"Using device: {device}")
 
   recording = None
-  agent = Agent(env.action_space.n, device, config['agent'])
+  agent = Agent(env, device, config['agent'])
+
   if args.record_play:
     episodes = [agent.episodes_trained]
   else:
@@ -61,37 +64,23 @@ def main(args):
     if args.record_play:
       recording = Recording(f"{config['agent']['name']}_{episode}")
     agent.episode_begin(recording=args.record_play)
-    state, info = env.reset()
-    state = env.render()
+    observation, info = env.reset()
     total_reward = 0
-    done = False
-    last_score = None
 
     if config['env'].get('max_num_steps', float('inf')) < agent.global_step:
       print(f"Maximum number of steps {config['env']['max_num_steps']}")
       break
     for timestep in range(config['env']['max_steps_per_episode']):
-      action, q_values = agent.act(state)
-      next_state, reward, done, truncated, info = env.step(action)
-      next_state = env.render()
-      if 'SuperMario' in config['env']['env_name']:
-        world, stage, score = info['world'], info['stage'], info['score']
-      else:
-        world, stage, score = (0, 0, 0)
+      action, q_values = agent.act(observation)
+      next_observation, reward, done, truncated, info = env.step(action)
       done = done or truncated
 
-      # Amend reward with score change if configured.
-      if config['env'][
-          'use_score'] and last_score != None and last_score != score:
-        reward += (score - last_score) / 100.0
-      last_score = score
-
-      agent.remember(action, reward, next_state, done)
+      agent.remember(observation, action, reward, next_observation, done)
       agent.replay()
 
-      render(next_state, q_values, action, action_labels, recording=recording)
+      render(env, q_values, action, action_labels, recording=recording)
 
-      state = next_state
+      observation = next_observation
       total_reward += reward
       if done:
         break
@@ -102,8 +91,6 @@ def main(args):
     episode_info = {
         'episode': episode,
         'total_reward': total_reward,
-        'world': world,
-        'stage': stage,
         'steps': timestep + 1
     }
     agent.episode_end(episode_info)
