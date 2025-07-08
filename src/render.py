@@ -2,6 +2,7 @@ import cv2
 import numpy as np
 import time
 import threading
+import torch
 
 from pynput import keyboard
 
@@ -43,7 +44,7 @@ keyboard_thread.daemon = True
 keyboard_thread.start()
 
 
-def maybe_render_dqn(x, side_input: int):
+def maybe_render_dqn(x, side_input: torch.Tensor):
   if not should_render():
     return
   num_frames = x.shape[0]
@@ -63,7 +64,7 @@ def maybe_render_dqn(x, side_input: int):
   if stacked.ndim == 2:
     stacked = cv2.cvtColor(stacked, cv2.COLOR_GRAY2BGR)
   # Render side_input value below the stacked frames
-  text = f"side_input: {side_input.item()}"
+  text = f"side_input: {side_input}"
   # Calculate new image height to add space for text
   text_height = 40
   new_height = stacked.shape[0] + text_height

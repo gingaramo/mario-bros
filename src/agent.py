@@ -6,10 +6,11 @@ import torch.nn as nn
 import torch.optim as optim
 import math
 import os
-from torch.utils.tensorboard import SummaryWriter
+from src.tb_logging import GlobalStepSummaryWriter as SummaryWriter
 from src.dqn import DQN
 from src.environment import Observation
 from src.state import State
+from src.replay_buffer import ReplayBuffer
 import pickle
 
 
@@ -73,14 +74,17 @@ class Agent:
             f'Resuming from checkpoint. Episode {self.episodes_trained}, global step {self.global_step}'
         )
     self.summary_writer = SummaryWriter(log_dir=f"runs/tb_{config['name']}",
+                                        max_queue=10000,
+                                        flush_secs=60,
                                         purge_step=self.global_step)
+    self.replay_buffer = ReplayBuffer(config['replay_buffer'], device,
+                                      self.summary_writer)
 
     # Action selection parameters.
     self.action_selection = config.get('action_selection', 'max')
     self.action_selection_temperature = config.get(
         'action_selection_temperature', 1.0)
     # Action repeat settings
-    self.action_repeat_steps = config.get('action_repeat_steps', None)
     self.step = 0
     # Episode being recorded? Helps avoid state updates and checkpoints
     self.recording = False
@@ -110,37 +114,10 @@ class Agent:
                next_observation: Observation, done: bool):
     """Stores experience. State gathered from last state sent to act().
     """
-    self.memory.append(
-        (observation.as_input(torch.device('cpu')), action, reward,
-         next_observation.as_input(torch.device('cpu')), done))
-
-    if len(self.memory) > self.memory_size:
-      to_remove = random.randint(0, len(self.memory) - 1)
-      self.memory.pop(to_remove)
-
-    self.summary_writer.add_scalar('Memory/Size', len(self.memory),
-                                   self.global_step)
-    self.summary_writer.add_scalar('Memory/Reward', reward, self.global_step)
-
-    # Prioritize learning from bad more than good experiences.
-    # TODO: add back
-    # if self.memory_selection == 'uniform':
-    #   self.memory_error.append(1.0)
-    # elif self.memory_selection == 'prioritized':
-    #   # TODO(gingaramo): Revisit this formula below.
-    #   q_estimate = reward + self.gamma * torch.argmax(
-    #       self.target_model(
-    #           torch.tensor(np.concatenate(
-    #               (curr_state[1:], [next_state]), axis=0, dtype=np.float32),
-    #                        device=self.device),
-    #           torch.tensor([action], device=self.device))).item() * (not done)
-    #   self.memory_error.append(
-    #       td_error(self.last_q_values[action],
-    #                q_estimate)**self.memory_selection_alpha)
-    # else:
-    #   raise ValueError(f"Invalid memory_selection {self.memory_selection}")
-    # self.summary_writer.add_scalar('Memory/Estimation Error',
-    #                                self.memory_error[-1], self.global_step)
+    self.replay_buffer.append(observation.as_input(torch.device('cpu')),
+                              action, reward,
+                              next_observation.as_input(torch.device('cpu')),
+                              done)
 
   def act(self, observation: Observation) -> tuple[int, np.ndarray]:
     """Returns the action to take based on the current observation.
@@ -152,6 +129,7 @@ class Agent:
     if not self.recording:
       # We only update global step when we're training, not recording.
       self.global_step += 1
+      self.summary_writer.set_global_step(self.global_step)
 
     with torch.no_grad():
       q_values = self.model(observation.as_input(self.device))
@@ -179,8 +157,7 @@ class Agent:
     self.last_q_values = q_values
     self.last_act_values = act_values
     # Log histogram of act_values (Q-values or softmax probabilities)
-    self.summary_writer.add_histogram('Act/ActValues', act_values,
-                                      self.global_step)
+    self.summary_writer.add_histogram('Act/ActValues', act_values)
     return action, act_values
 
   def clip_gradients(self):
@@ -193,67 +170,31 @@ class Agent:
   def replay(self):
     if self.recording:
       return
-    if len(self.memory) < self.batch_size:
+    if len(self.replay_buffer) < self.batch_size:
       return
-    if len(self.memory) < self.config.get('min_memory_size', 0):
+    if len(self.replay_buffer) < self.config.get('min_memory_size', 0):
       return
     if self.global_step % self.replay_every_n_steps != 0:
       return
     # Gather ids to fix memory_error later on
-    minibatch_ids = random.choices(range(len(self.memory)), k=self.batch_size)
-    # TODO: add back
-    # if self.memory_selection == 'prioritized':
-    #   # Compute importance sampling weights, ensuring we scale by the maximum value
-    #   # to ensure weights correct gradient updates downwards.
-    #   N_ = float(len(self.memory))
-    #   td_errors = np.array(self.memory_error, dtype=np.float32)
-    #   wis_weights = (td_errors.sum() /
-    #                  (td_errors * N_))**self.memory_selection_beta
-    #   wis_weights_max = wis_weights.max()
-    #   wis_weights = torch.tensor(wis_weights[minibatch_ids] / wis_weights_max,
-    #                              device=self.device)
-    # Gather memories from self.memory using indices in minibatch_ids
-    minibatch = [self.memory[i] for i in minibatch_ids]
-    all_observation, all_action, all_reward, all_next_observation, all_done = zip(
-        *minibatch)
 
-    def to_input(
-        observations: Tuple[Tuple[torch.Tensor, torch.Tensor], ...]
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-      no_tensor = torch.tensor(())
-      if len(observations[0][0].shape) == 0:
-        all_frames = no_tensor
-      else:
-        all_frames = torch.tensor(np.stack(
-            [observation[0] for observation in observations]),
-                                  dtype=torch.float,
-                                  device=self.device)
-      if len(observations[0][1].shape) == 0:
-        all_dense = no_tensor
-      else:
-        all_dense = torch.tensor(np.stack(
-            [observation[1] for observation in observations]),
-                                 dtype=torch.float,
-                                 device=self.device)
-      return (all_frames, all_dense)
-
-    all_observation = to_input(all_observation)
-    all_next_observation = to_input(all_next_observation)
-    all_action = torch.tensor(all_action,
-                              dtype=torch.int64,
-                              device=self.device)
-    all_reward = torch.tensor(all_reward,
-                              dtype=torch.float,
-                              device=self.device)
-    all_done = torch.tensor(all_done, dtype=torch.bool, device=self.device)
-
+    (all_observation, all_action, all_reward, all_next_observation,
+     all_done) = self.replay_buffer.sample(self.batch_size)
     with torch.no_grad():
       # Double DQN is the next line:
-      idx = torch.argmax(self.model(all_next_observation, training=True),
-                         dim=1)
-      q_next = torch.gather(
-          self.target_model(all_next_observation, training=True), 1,
-          idx.view(-1, 1)).squeeze(1)
+      if self.config.get('double_dqn', True):
+        # Use the model to select the best action for the next state
+        # and then use the target model to get the Q-value for that action.
+        # This helps reduce overestimation bias.
+        idx = torch.argmax(self.model(all_next_observation, training=True),
+                           dim=1)
+        q_next = torch.gather(
+            self.target_model(all_next_observation, training=True), 1,
+            idx.view(-1, 1)).squeeze(1)
+      else:
+        # Use the target model to get the Q-value for the next state
+        q_next = self.target_model(all_next_observation,
+                                   training=True).max(dim=1).values
       target = all_reward + self.gamma * q_next * (~all_done)
 
     q_values = self.model(all_observation, training=True)
@@ -279,8 +220,7 @@ class Agent:
           'replays_until_target_update', 0)
       self.target_updates_counter += 1
       self.summary_writer.add_scalar("Replay/TargetUpdate",
-                                     self.target_updates_counter,
-                                     self.global_step)
+                                     self.target_updates_counter)
       self.target_model.load_state_dict(self.model.state_dict())
 
     self.optimizer.zero_grad()
@@ -288,18 +228,15 @@ class Agent:
     pre_clip_grad_norm = self.clip_gradients()
     self.optimizer.step()
 
-    self.summary_writer.add_scalar('Replay/Loss', loss, self.global_step)
+    self.summary_writer.add_scalar('Replay/Loss', loss)
     self.summary_writer.add_scalar('Replay/Q-mean',
-                                   torch.mean(q_values.flatten()),
-                                   self.global_step)
-    self.summary_writer.add_scalar('Replay/Epsilon', self.epsilon,
-                                   self.global_step)
+                                   torch.mean(q_values.flatten()))
+    self.summary_writer.add_scalar('Replay/Epsilon', self.epsilon)
     self.summary_writer.add_scalar(
         "Replay/PreClipParamNorm",
-        torch.nn.utils.get_total_norm(self.model.parameters()),
-        self.global_step)
+        torch.nn.utils.get_total_norm(self.model.parameters()))
     self.summary_writer.add_scalar("Replay/PreClipGradNorm",
-                                   pre_clip_grad_norm, self.global_step)
+                                   pre_clip_grad_norm)
 
   def episode_begin(self, recording=False):
     self.recording = recording
@@ -308,13 +245,10 @@ class Agent:
     if self.recording:
       return
     # Episode statistics
-    self.summary_writer.add_scalar("Episode/Episode", episode_info['episode'],
-                                   self.global_step)
+    self.summary_writer.add_scalar("Episode/Episode", episode_info['episode'])
     self.summary_writer.add_scalar("Episode/Reward",
-                                   episode_info['total_reward'],
-                                   self.global_step)
-    self.summary_writer.add_scalar("Episode/Steps", episode_info['steps'],
-                                   self.global_step)
+                                   episode_info['total_reward'])
+    self.summary_writer.add_scalar("Episode/Steps", episode_info['steps'])
 
     # Update epsilon
     if self.epsilon > self.epsilon_min:

@@ -49,6 +49,19 @@ $> python main.py --config agents/basic.yml
 
 3) Once completed you'll have two new files in `runs/` folder `profile_{date}.data` and `config_{date}.yml`.
 
+# Testing
+
+Run the unit tests to ensure everything is working correctly:
+
+```bash
+# Stop on first failure
+./test --failfast
+```
+
+Tests are automatically run before each commit via pre-commit hooks to ensure code quality.
+
+For more detailed testing information, see [src/TEST_README.md](src/TEST_README.md).
+
 # Profiling
 
 ```bash

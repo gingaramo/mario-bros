@@ -556,8 +556,9 @@ class TestHistoryEnv(unittest.TestCase):
     self.assertEqual(
         obs.frame.shape,
         (3, 3, 84, 84))  # (C, N, H, W) - 3 channels, 3 history frames
-    self.assertEqual(obs.dense.shape,
-                     (3, 2))  # 3 history steps, 2 dense features each
+    self.assertEqual(
+        obs.dense.shape,
+        (6, ))  # 3 history steps * 2 dense features each = 6 total
 
   def test_reset(self):
     """Test reset method."""
@@ -624,11 +625,10 @@ class TestHistoryEnv(unittest.TestCase):
 
     self.assertIsInstance(history, Observation)
     self.assertEqual(history.dense.shape,
-                     (3, 2))  # 3 history steps, 2 features each
-    # First dense vector should be padded (repeated)
-    np.testing.assert_array_equal(history.dense[0], dense1)  # Padded
-    np.testing.assert_array_equal(history.dense[1], dense1)  # First actual
-    np.testing.assert_array_equal(history.dense[2], dense2)  # Second actual
+                     (6, ))  # 3 history steps * 2 features each = 6 total
+    # Dense vectors should be concatenated: [dense1, dense1, dense2]
+    expected_dense = np.concatenate([dense1, dense1, dense2])
+    np.testing.assert_array_equal(history.dense, expected_dense)
 
   def test_mixed_observations_history(self):
     """Test history with mixed observations (some with/without dense vectors)."""
@@ -648,10 +648,11 @@ class TestHistoryEnv(unittest.TestCase):
     self.assertIsInstance(history, Observation)
     self.assertEqual(history.frame.shape, (3, 2, 84, 84))  # (C, N, H, W)
     # Only one observation has dense vector, but we pad to match history_length=2
-    self.assertEqual(history.dense.shape, (2, 2))
+    self.assertEqual(history.dense.shape,
+                     (4, ))  # 2 history steps * 2 features = 4 total
     # Both entries should be the same (padded with the first/only dense vector)
-    np.testing.assert_array_equal(history.dense[0], np.array([1, 2]))
-    np.testing.assert_array_equal(history.dense[1], np.array([1, 2]))
+    expected_dense = np.concatenate([np.array([1, 2]), np.array([1, 2])])
+    np.testing.assert_array_equal(history.dense, expected_dense)
 
 
 class TestIntegration(unittest.TestCase):

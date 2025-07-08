@@ -86,7 +86,8 @@ class Observation(object):
         torch.empty(0) if self.dense is None else self.dense
     ]
     return [
-        torch.tensor(input, device=device, dtype=torch.float32)
+        input.clone().detach().to(device).float() if torch.is_tensor(input)
+        else torch.tensor(input, device=device, dtype=torch.float32)
         for input in inputs
     ]
 

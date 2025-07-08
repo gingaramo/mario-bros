@@ -1,0 +1,34 @@
+#!/usr/bin/env python3
+"""
+Simple test runner that changes to src/ directory and runs unit tests.
+"""
+
+import os
+import sys
+import subprocess
+
+
+def main():
+  # Change to src directory where tests are located
+  script_dir = os.path.dirname(os.path.abspath(__file__))
+  src_dir = os.path.join(script_dir, 'src')
+
+  if not os.path.exists(src_dir):
+    print("Error: src/ directory not found")
+    sys.exit(1)
+
+  os.chdir(src_dir)
+
+  # Forward all arguments to run_tests.py
+  cmd = [sys.executable, 'run_tests.py'] + sys.argv[1:]
+
+  try:
+    result = subprocess.run(cmd)
+    sys.exit(result.returncode)
+  except KeyboardInterrupt:
+    print("\nTest run interrupted")
+    sys.exit(1)
+
+
+if __name__ == "__main__":
+  main()
