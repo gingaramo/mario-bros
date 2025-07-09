@@ -14,7 +14,7 @@ This will automatically detect whether you have the `pre-commit` framework insta
 ## What Gets Checked
 
 Before each commit, the following checks will run:
-- **All unit tests** in the `src/` directory
+- **All unit tests** in the `tests/` directory
 - Code formatting checks (if using pre-commit framework)
 - Python syntax validation
 - Import sorting validation

@@ -42,10 +42,10 @@ repos:
   # Local hooks for running tests
   - repo: local
     hooks:
-      # Run all unit tests in src/ directory
+      # Run all unit tests in tests/ directory
       - id: run-unit-tests
         name: Run Unit Tests
-        entry: python -m unittest discover -s src -p "*test*.py" -v
+        entry: python run_tests.py
         language: system
         pass_filenames: false
         always_run: true

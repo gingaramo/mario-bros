@@ -17,8 +17,8 @@ python run_tests.py
 ## Test Files
 
 - `environment_test.py` - Tests for environment wrappers and preprocessing
+- `replay_buffer_test.py` - Tests for replay buffer functionality
 - `run_tests.py` - Main test runner script
-- `test_runner.py` - Alternative test runner
 
 ## Adding New Tests
 
