@@ -3,22 +3,18 @@ import gymnasium as gym
 import gym_super_mario_bros  # Keep (environment registration)
 from nes_py.wrappers import JoypadSpace
 from gym_super_mario_bros.actions import SIMPLE_MOVEMENT
+import ale_py
 import torch
+from tqdm import tqdm
 import yaml
-import time
-import pickle
-import os
 import cv2
 import shutil
 import numpy as np
 
 from src.agent import Agent
+from src.environment import create_environment
 from src.recording import Recording
 from src.render import render, set_headless_mode
-from src.environment import create_environment
-
-import ale_py
-from tqdm import tqdm
 
 gym.register_envs(ale_py)
 
@@ -40,14 +36,7 @@ def main(args):
 
   set_headless_mode(config['env'].get('headless', False))
   env = create_environment(config['env'])
-
-  if 'SuperMario' in config['env']['env_name']:
-    # We only apply this for Mario. Other environments are likely just Atari
-    # and thus don't need this.
-    env = JoypadSpace(env, SIMPLE_MOVEMENT)
-    action_labels = SIMPLE_MOVEMENT
-  else:
-    action_labels = config['env']['env_action_labels']
+  action_labels = config['env']['env_action_labels']
 
   device = torch.device(config['device'])
   print(f"Using device: {device}")

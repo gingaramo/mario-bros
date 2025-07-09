@@ -3,8 +3,6 @@ import random
 import torch
 import numpy as np
 
-from src.environment import Observation
-
 
 class ReplayBuffer(object):
   """
@@ -23,8 +21,8 @@ class ReplayBuffer(object):
   def __len__(self):
     return len(self.buffer)
 
-  def append(self, observation: torch.Tensor, action: int, reward: float,
-             next_observation: torch.Tensor, done: bool):
+  def append(self, observation: List[torch.Tensor], action: int, reward: float,
+             next_observation: List[torch.Tensor], done: bool):
     self.buffer.append((observation, action, reward, next_observation, done))
     if len(self.buffer) > self.config['size']:
       to_remove = random.randint(0, len(self.buffer) - 1)
@@ -34,13 +32,17 @@ class ReplayBuffer(object):
 
   def sample(self, batch_size: int):
     # For now only uniform sampling
+    if len(self) < batch_size:
+      raise ValueError(
+          f"Cannot sample {batch_size} from buffer of size {len(self)}")
+
     minibatch = random.choices(self.buffer, k=batch_size)
 
     all_observation, all_action, all_reward, all_next_observation, all_done = zip(
         *minibatch)
 
     def to_input(
-        observations: Tuple[Tuple[torch.Tensor, torch.Tensor], ...]
+        observations: Tuple[List[torch.Tensor], ...]
     ) -> Tuple[torch.Tensor, torch.Tensor]:
       no_tensor = torch.tensor(())
       if len(observations[0][0].shape) == 0:

@@ -1,7 +1,7 @@
 #!/bin/sh
 #
 # Pre-commit hook script to run unit tests
-# This script runs all unit tests in the src/ directory before allowing a commit
+# This script runs all unit tests in the tests/ directory before allowing a commit
 #
 # To install this hook:
 # 1. Copy this file to .git/hooks/pre-commit
@@ -16,17 +16,16 @@ echo "Running pre-commit checks..."
 # Change to the repository root directory
 cd "$(git rev-parse --show-toplevel)"
 
-# Check if we're in the right directory (should have src/ folder)
-if [ ! -d "src" ]; then
-    echo "Error: src/ directory not found. Are you in the correct repository?"
+# Check if we're in the right directory (should have tests/ folder)
+if [ ! -d "tests" ]; then
+    echo "Error: tests/ directory not found. Are you in the correct repository?"
     exit 1
 fi
 
-echo "Running unit tests in src/ directory..."
+echo "Running unit tests..."
 
-# Run all unit tests in src/ directory
-cd src
-python -m unittest discover -s . -p "*test*.py" -v
+# Run the test runner
+python run_tests.py
 
 # Check if tests passed
 if [ $? -eq 0 ]; then

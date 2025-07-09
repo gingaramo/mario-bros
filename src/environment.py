@@ -432,6 +432,10 @@ def create_environment(config: dict) -> gym.Env:
       env = HistoryEnv(env, config.get('HistoryEnv', {}))
     elif wrapper == 'CaptureRenderFrameEnv':
       env = CaptureRenderFrameEnv(env, config.get('CaptureRenderFrameEnv', {}))
+    elif wrapper == 'JoypadSpaceEnv':
+      from gym_super_mario_bros.wrappers import JoypadSpace
+      from gym_super_mario_bros.actions import SIMPLE_MOVEMENT
+      env = JoypadSpace(env, SIMPLE_MOVEMENT)
     else:
       raise ValueError(f"Unknown environment wrapper: {wrapper}")
   return env

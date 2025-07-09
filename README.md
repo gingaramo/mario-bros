@@ -27,7 +27,7 @@ Follow these steps to set up the project:
 4. **Apply necessary patches**  
   Run the patch script to apply required patches:
   ```bash
-  ./src/apply_patches.sh
+  ./scripts/apply_patches.sh
   ```
 
 5. **Set up pre-commit hooks (Recommended)**  

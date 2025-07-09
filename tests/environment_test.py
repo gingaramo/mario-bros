@@ -4,6 +4,14 @@ import gymnasium as gym
 from unittest.mock import Mock, MagicMock, patch
 from typing import Tuple, Dict, Any
 import cv2
+import sys
+import os
+
+# Add src directory to path so we can import modules
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+src_path = os.path.join(project_root, 'src')
+if src_path not in sys.path:
+  sys.path.insert(0, src_path)
 
 from environment import PreprocessFrameEnv, RepeatActionEnv, ReturnActionEnv, HistoryEnv, CaptureRenderFrameEnv, create_environment, Observation, ObservationWrapper
 

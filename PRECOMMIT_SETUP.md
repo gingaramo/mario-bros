@@ -30,7 +30,7 @@ Result: All 58 tests passed successfully!
 
 Before every commit, Git will automatically:
 
-1. Run all unit tests in the `src/` directory
+1. Run all unit tests in the `tests/` directory
 2. If any test fails, the commit is blocked
 3. If all tests pass, the commit proceeds normally
 
