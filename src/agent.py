@@ -12,6 +12,7 @@ from src.environment import Observation
 from src.state import State
 from src.replay_buffer import ReplayBuffer
 import pickle
+from torch.optim import lr_scheduler
 
 
 def td_error(q_value: float, reward: float):
@@ -28,12 +29,6 @@ class Agent:
 
     # Replay parameters.
     self.replay_every_n_steps = config['replay_every_n_steps']
-    self.memory_size = config['memory_size']
-    self.memory = []
-    self.memory_selection = self.config['memory_selection']
-    self.memory_selection_alpha = self.config.get('memory_selection_alpha',
-                                                  1.0)
-    self.memory_selection_beta = self.config.get('memory_selection_beta', 1.0)
     self.batch_size = config['batch_size']
     self.replays_until_target_update = config.get(
         'replays_until_target_update', 0)
@@ -42,8 +37,12 @@ class Agent:
     # Learning parameters.
     self.gamma = config['gamma']
     self.epsilon_min = config['epsilon_min']
-    self.epsilon_decay = config['epsilon_decay']
     self.learning_rate = config['learning_rate']
+    assert 'epsilon_exponential_decay' in config or 'epsilon_linear_decay' in config, \
+        "Either 'epsilon_exponential_decay' or 'epsilon_linear_decay' must be provided in config."
+    self.epsilon_linear_decay = config.get('epsilon_linear_decay', None)
+    self.epsilon_exponential_decay = config.get('epsilon_exponential_decay',
+                                                None)
     if self.config['loss'] == 'mse':
       self.get_loss = nn.MSELoss
     elif self.config['loss'] == 'smooth_l1':
@@ -109,6 +108,12 @@ class Agent:
     else:
       raise ValueError(
           f"Unsupported optimizer: {config['optimizer']}. Supported: 'adam'.")
+
+    self.lr_scheduler = None
+    if 'lr_scheduler' in config:
+      exec(
+          f"self.lr_scheduler = {config['lr_scheduler']['type']}(self.optimizer, **{config['lr_scheduler']['args']})"
+      )
 
   def remember(self, observation: Observation, action: int, reward: float,
                next_observation: Observation, done: bool):
@@ -227,8 +232,17 @@ class Agent:
     loss.backward()
     pre_clip_grad_norm = self.clip_gradients()
     self.optimizer.step()
+    if self.lr_scheduler:
+      self.lr_scheduler.step()
+    if self.epsilon > self.epsilon_min:
+      if self.epsilon_exponential_decay:
+        self.epsilon *= self.epsilon_exponential_decay
+      elif self.epsilon_linear_decay:
+        self.epsilon -= self.epsilon_linear_decay
 
     self.summary_writer.add_scalar('Replay/Loss', loss)
+    self.summary_writer.add_scalar('Replay/LearningRate',
+                                   self.optimizer.param_groups[0]['lr'])
     self.summary_writer.add_scalar('Replay/Q-mean',
                                    torch.mean(q_values.flatten()))
     self.summary_writer.add_scalar('Replay/Epsilon', self.epsilon)
@@ -249,10 +263,6 @@ class Agent:
     self.summary_writer.add_scalar("Episode/Reward",
                                    episode_info['total_reward'])
     self.summary_writer.add_scalar("Episode/Steps", episode_info['steps'])
-
-    # Update epsilon
-    if self.epsilon > self.epsilon_min:
-      self.epsilon *= self.epsilon_decay
 
     # Checkpoint
     self.episodes_trained += 1

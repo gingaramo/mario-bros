@@ -9,6 +9,7 @@ from tqdm import tqdm
 import yaml
 import cv2
 import shutil
+import os
 import numpy as np
 
 from src.agent import Agent
@@ -31,6 +32,9 @@ def clear_checkpoints(config):
 def main(args):
   print(f"Using configuration file: {args.config}")
   config = yaml.safe_load(open(args.config, 'r'))
+  # Copy the file to the checkpoint directory (create the directory if it doesn't exist)
+  os.makedirs(f"checkpoint/{config['agent']['name']}", exist_ok=True)
+  shutil.copy(args.config, f"checkpoint/{config['agent']['name']}/config.yaml")
   if args.restart:
     clear_checkpoints(config)
 
@@ -73,6 +77,7 @@ def main(args):
       total_reward += reward
       if done:
         break
+    agent.summary_writer.flush()
 
     if recording:
       recording.save()
