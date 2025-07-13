@@ -11,20 +11,21 @@ src_path = os.path.join(project_root, 'src')
 if src_path not in sys.path:
   sys.path.insert(0, src_path)
 
-from replay_buffer import ReplayBuffer
+from replay_buffer import UniformExperienceReplayBuffer, PrioritizedExperienceReplayBuffer
 
 
-class TestReplayBuffer(unittest.TestCase):
-  """End-to-end test cases for ReplayBuffer."""
+class TestUniformReplayBuffer(unittest.TestCase):
+  """End-to-end test cases for UniformExperienceReplayBuffer."""
 
   def setUp(self):
     """Set up test fixtures."""
     self.device = torch.device('cpu')
     self.mock_summary_writer = Mock()
     self.config = {'size': 100}
-    self.replay_buffer = ReplayBuffer(config=self.config,
-                                      device=self.device,
-                                      summary_writer=self.mock_summary_writer)
+    self.replay_buffer = UniformExperienceReplayBuffer(
+        config=self.config,
+        device=self.device,
+        summary_writer=self.mock_summary_writer)
 
   def _create_mock_observation_tensors(self,
                                        has_frame=True,
@@ -33,9 +34,9 @@ class TestReplayBuffer(unittest.TestCase):
     """Helper to create mock observation tensors similar to Observation.as_input()."""
     observations = []
     for _ in range(batch_size):
-      frame = torch.randn(3, 84, 84) if has_frame else torch.empty(0)
-      dense = torch.randn(4) if has_dense else torch.empty(0)
-      observations.append([frame, dense])
+      frame = torch.randn(3, 84, 84) if has_frame else torch.tensor(())
+      dense = torch.randn(4) if has_dense else torch.tensor(())
+      observations.append((frame, dense))
     return observations
 
   def test_basic_workflow_with_frame_and_dense_observations(self):
@@ -137,8 +138,8 @@ class TestReplayBuffer(unittest.TestCase):
     """Test that buffer respects size limit and randomly evicts old experiences."""
     # Set small buffer size
     small_config = {'size': 5}
-    small_buffer = ReplayBuffer(small_config, self.device,
-                                self.mock_summary_writer)
+    small_buffer = UniformExperienceReplayBuffer(small_config, self.device,
+                                                 self.mock_summary_writer)
 
     # Add more experiences than buffer can hold
     experiences = []
@@ -249,5 +250,374 @@ class TestReplayBuffer(unittest.TestCase):
       self.assertEqual(dense.shape[1:], (4, ))
 
 
-if __name__ == '__main__':
-  unittest.main()
+class TestPrioritizedReplayBuffer(unittest.TestCase):
+  """End-to-end test cases for PrioritizedExperienceReplayBuffer."""
+
+  def setUp(self):
+    """Set up test fixtures."""
+    self.device = torch.device('cpu')
+    self.mock_summary_writer = Mock()
+
+    # Mock the target and prediction callbacks required for prioritized replay
+    self.mock_target_callback = Mock(
+        return_value=torch.tensor([1.0, 2.0, 3.0]))
+    self.mock_prediction_callback = Mock(
+        return_value=torch.tensor([1.1, 1.9, 3.2]))
+
+    self.config = {
+        'size': 100,
+        'alpha': 0.6,  # Prioritization exponent
+        'beta': 0.4  # Importance sampling exponent
+    }
+    self.replay_buffer = PrioritizedExperienceReplayBuffer(
+        config=self.config,
+        device=self.device,
+        summary_writer=self.mock_summary_writer,
+        target_callback=self.mock_target_callback,
+        prediction_callback=self.mock_prediction_callback)
+
+  def _create_mock_observation_tensors(self,
+                                       has_frame=True,
+                                       has_dense=True,
+                                       batch_size=1):
+    """Helper to create mock observation tensors similar to Observation.as_input()."""
+    observations = []
+    for _ in range(batch_size):
+      frame = torch.randn(3, 84, 84) if has_frame else torch.tensor(())
+      dense = torch.randn(4) if has_dense else torch.tensor(())
+      observations.append((frame, dense))
+    return observations
+
+  def test_prioritized_buffer_initialization(self):
+    """Test that prioritized buffer initializes correctly with required parameters."""
+    self.assertEqual(self.replay_buffer.alpha, 0.6)
+    self.assertEqual(self.replay_buffer.beta, 0.4)
+    self.assertEqual(len(self.replay_buffer.surprise), 0)
+    self.assertIsNotNone(self.replay_buffer.compute_target)
+    self.assertIsNotNone(self.replay_buffer.compute_prediction)
+
+  def test_prioritized_append_computes_surprise(self):
+    """Test that appending experiences computes and stores surprise values."""
+    obs = self._create_mock_observation_tensors()[0]
+    next_obs = self._create_mock_observation_tensors()[0]
+
+    # Mock the callbacks to return known values for testing
+    self.mock_target_callback.return_value = torch.tensor([2.0])
+    self.mock_prediction_callback.return_value = torch.tensor([1.5])
+
+    self.replay_buffer.append(obs, 1, 0.5, next_obs, False)
+
+    # Verify surprise was computed and stored
+    self.assertEqual(len(self.replay_buffer.surprise), 1)
+    self.assertGreater(self.replay_buffer.surprise[0], 0)
+
+    # Verify callbacks were called
+    self.mock_target_callback.assert_called_once()
+    self.mock_prediction_callback.assert_called_once()
+
+  def test_prioritized_sampling_with_importance_weights(self):
+    """Test that prioritized sampling returns importance sampling weights."""
+    # Add several experiences with different mock surprise values
+    experiences = []
+    for i in range(10):
+      obs = self._create_mock_observation_tensors()[0]
+      next_obs = self._create_mock_observation_tensors()[0]
+
+      # Mock different target/prediction values to create different surprises
+      self.mock_target_callback.return_value = torch.tensor([float(i + 1)])
+      self.mock_prediction_callback.return_value = torch.tensor([float(i)])
+
+      self.replay_buffer.append(obs, i % 4, float(i) * 0.1, next_obs, i == 9)
+      experiences.append((i % 4, float(i) * 0.1, i == 9))
+
+    # Sample batch and verify it returns importance weights
+    batch_size = 5
+
+    # Mock the callbacks to return tensors of the right size for sampling
+    self.mock_target_callback.return_value = torch.tensor(
+        [1.0, 2.0, 3.0, 4.0, 5.0])
+    self.mock_prediction_callback.return_value = torch.tensor(
+        [0.9, 1.9, 2.9, 3.9, 4.9])
+
+    result = self.replay_buffer.sample(batch_size)
+
+    # Should return tuple with (experiences, importance_weights)
+    self.assertIsInstance(result, tuple)
+    self.assertEqual(len(result), 2)
+
+    experiences_tuple, importance_weights = result
+    all_obs, all_actions, all_rewards, all_next_obs, all_done = experiences_tuple
+
+    # Verify experience tensors
+    self.assertEqual(len(importance_weights), batch_size)
+    self.assertEqual(all_actions.shape[0], batch_size)
+
+    # Verify importance weights are positive numbers
+    for weight in importance_weights:
+      self.assertIsInstance(weight, float)
+      self.assertGreater(weight, 0)
+
+  def test_prioritized_sampling_updates_surprises(self):
+    """Test that sampling updates surprise values based on current TD errors."""
+    # Add experiences
+    for i in range(5):
+      obs = self._create_mock_observation_tensors()[0]
+      next_obs = self._create_mock_observation_tensors()[0]
+
+      self.mock_target_callback.return_value = torch.tensor([1.0])
+      self.mock_prediction_callback.return_value = torch.tensor([0.5])
+
+      self.replay_buffer.append(obs, i, 0.1, next_obs, False)
+
+    # Store initial surprise values
+    initial_surprises = list(self.replay_buffer.surprise)
+
+    # Mock new target/prediction values for sampling (match batch size of 3)
+    self.mock_target_callback.return_value = torch.tensor([2.0, 2.5, 3.0])
+    self.mock_prediction_callback.return_value = torch.tensor([1.0, 1.5, 2.0])
+
+    # Sample and verify surprise values were updated
+    result = self.replay_buffer.sample(3)
+
+    # At least some surprise values should have changed
+    current_surprises = list(self.replay_buffer.surprise)
+    self.assertNotEqual(initial_surprises, current_surprises)
+
+  def test_prioritized_error_handling(self):
+    """Test error handling for insufficient samples."""
+    # Add only 2 experiences
+    for i in range(2):
+      obs = self._create_mock_observation_tensors()[0]
+      next_obs = self._create_mock_observation_tensors()[0]
+
+      self.mock_target_callback.return_value = torch.tensor([1.0])
+      self.mock_prediction_callback.return_value = torch.tensor([0.5])
+
+      self.replay_buffer.append(obs, i, 1.0, next_obs, False)
+
+    # Try to sample more than available
+    with self.assertRaises(ValueError) as context:
+      self.replay_buffer.sample(5)
+
+    self.assertIn("Cannot sample 5 from buffer of size 2",
+                  str(context.exception))
+
+  def test_zero_surprise_handling(self):
+    """Test that prioritized buffer handles experiences with zero surprise correctly."""
+    # Mock callbacks to return identical values (zero surprise)
+    self.mock_target_callback.return_value = torch.tensor([2.0])
+    self.mock_prediction_callback.return_value = torch.tensor([2.0])
+
+    obs = self._create_mock_observation_tensors()[0]
+    next_obs = self._create_mock_observation_tensors()[0]
+
+    self.replay_buffer.append(obs, 1, 0.5, next_obs, False)
+
+    # Zero surprise should be stored as 0.0 during append
+    self.assertEqual(len(self.replay_buffer.surprise), 1)
+    self.assertEqual(self.replay_buffer.surprise[0], 1e-5)
+
+    # Add another experience with non-zero surprise to avoid division by zero
+    self.mock_target_callback.return_value = torch.tensor([3.0])
+    self.mock_prediction_callback.return_value = torch.tensor([2.0])
+
+    self.replay_buffer.append(obs, 2, 1.0, next_obs, False)
+
+    # Now we should have one zero and one non-zero surprise
+    self.assertEqual(len(self.replay_buffer.surprise), 2)
+    self.assertEqual(self.replay_buffer.surprise[0], 1e-5)
+    self.assertGreater(self.replay_buffer.surprise[1], 0.0)
+
+  def test_buffer_overflow_maintains_surprise_sync(self):
+    """Test that when buffer overflows, surprise values stay synchronized."""
+    # Set small buffer size to test overflow
+    small_config = {'size': 3, 'alpha': 0.6, 'beta': 0.4}
+    small_buffer = PrioritizedExperienceReplayBuffer(
+        config=small_config,
+        device=self.device,
+        summary_writer=self.mock_summary_writer,
+        target_callback=self.mock_target_callback,
+        prediction_callback=self.mock_prediction_callback)
+
+    # Add more experiences than buffer can hold
+    for i in range(5):
+      obs = self._create_mock_observation_tensors()[0]
+      next_obs = self._create_mock_observation_tensors()[0]
+
+      self.mock_target_callback.return_value = torch.tensor([float(i + 1)])
+      self.mock_prediction_callback.return_value = torch.tensor([float(i)])
+
+      small_buffer.append(obs, i, float(i), next_obs, False)
+
+    # Buffer and surprise should both be limited to size 3
+    self.assertEqual(len(small_buffer), 3)
+    self.assertEqual(len(small_buffer.surprise), 3)
+
+
+class TestReplayBufferEdgeCases(unittest.TestCase):
+  """Test edge cases and error conditions for replay buffers."""
+
+  def setUp(self):
+    """Set up test fixtures."""
+    self.device = torch.device('cpu')
+    self.mock_summary_writer = Mock()
+    self.config = {'size': 10}
+
+  def test_empty_tensor_handling(self):
+    """Test that replay buffer handles empty tensors correctly."""
+    replay_buffer = UniformExperienceReplayBuffer(
+        config=self.config,
+        device=self.device,
+        summary_writer=self.mock_summary_writer)
+
+    # Test with completely empty tensors
+    empty_frame = torch.tensor(())
+    empty_dense = torch.tensor(())
+    obs = (empty_frame, empty_dense)
+    next_obs = (empty_frame, empty_dense)
+
+    replay_buffer.append(obs, 0, 1.0, next_obs, False)
+    self.assertEqual(len(replay_buffer), 1)
+
+    # Sample and verify empty tensors are handled
+    all_obs, all_actions, all_rewards, all_next_obs, all_done = replay_buffer.sample(
+        1)
+    frames, dense = all_obs
+    next_frames, next_dense = all_next_obs
+
+    self.assertEqual(frames.numel(), 0)
+    self.assertEqual(dense.numel(), 0)
+    self.assertEqual(next_frames.numel(), 0)
+    self.assertEqual(next_dense.numel(), 0)
+
+  def test_mixed_observation_types_error_prevention(self):
+    """Test handling of mixed observation types within single buffer."""
+    replay_buffer = UniformExperienceReplayBuffer(
+        config=self.config,
+        device=self.device,
+        summary_writer=self.mock_summary_writer)
+
+    # First add frame+dense observation
+    frame_dense_obs = (torch.randn(3, 84, 84), torch.randn(4))
+    replay_buffer.append(frame_dense_obs, 0, 1.0, frame_dense_obs, False)
+
+    # Then add frame-only observation
+    frame_only_obs = (torch.randn(3, 84, 84), torch.tensor(()))
+    replay_buffer.append(frame_only_obs, 1, 1.0, frame_only_obs, False)
+
+    # Should be able to sample - the system should handle mixed types
+    all_obs, all_actions, all_rewards, all_next_obs, all_done = replay_buffer.sample(
+        2)
+
+    # Verify basic structure
+    self.assertEqual(all_actions.shape[0], 2)
+    self.assertEqual(all_rewards.shape[0], 2)
+
+  def test_large_batch_sampling(self):
+    """Test sampling when batch size equals buffer size."""
+    replay_buffer = UniformExperienceReplayBuffer(
+        config={'size': 5},
+        device=self.device,
+        summary_writer=self.mock_summary_writer)
+
+    # Fill buffer to capacity
+    for i in range(5):
+      obs = (torch.randn(3, 84, 84), torch.randn(4))
+      replay_buffer.append(obs, i, float(i), obs, False)
+
+    # Sample entire buffer - note that random.choices allows duplicates
+    all_obs, all_actions, all_rewards, all_next_obs, all_done = replay_buffer.sample(
+        5)
+
+    self.assertEqual(all_actions.shape[0], 5)
+    # Verify all actions are in the valid range (0-4)
+    self.assertTrue(torch.all(all_actions >= 0))
+    self.assertTrue(torch.all(all_actions <= 4))
+
+  def test_summary_writer_logging(self):
+    """Test that summary writer is called correctly for memory logging."""
+    mock_writer = Mock()
+    replay_buffer = UniformExperienceReplayBuffer(config=self.config,
+                                                  device=self.device,
+                                                  summary_writer=mock_writer)
+
+    # Add experiences and verify logging
+    for i in range(3):
+      obs = (torch.randn(3, 84, 84), torch.randn(4))
+      replay_buffer.append(obs, i, float(i), obs, False)
+
+    # Verify summary writer was called for each append
+    self.assertEqual(mock_writer.add_scalar.call_count, 3)
+
+    # Verify the calls were for memory size logging
+    calls = mock_writer.add_scalar.call_args_list
+    for i, call in enumerate(calls):
+      args, kwargs = call
+      self.assertEqual(args[0], 'Memory/Size')
+      self.assertEqual(args[1], i + 1)  # Size should increment
+
+  def test_device_consistency(self):
+    """Test that replay buffer respects device settings for all tensors."""
+    # Test with different device if available
+    device = torch.device('cpu')
+    replay_buffer = UniformExperienceReplayBuffer(
+        config=self.config,
+        device=device,
+        summary_writer=self.mock_summary_writer)
+
+    # Add experiences with tensors on different devices
+    obs = (torch.randn(3, 84, 84), torch.randn(4))
+    next_obs = (torch.randn(3, 84, 84), torch.randn(4))
+
+    replay_buffer.append(obs, 0, 1.0, next_obs, False)
+
+    # Sample and verify all tensors are on correct device
+    all_obs, all_actions, all_rewards, all_next_obs, all_done = replay_buffer.sample(
+        1)
+
+    frames, dense = all_obs
+    next_frames, next_dense = all_next_obs
+
+    self.assertEqual(frames.device, device)
+    self.assertEqual(dense.device, device)
+    self.assertEqual(all_actions.device, device)
+    self.assertEqual(all_rewards.device, device)
+    self.assertEqual(all_done.device, device)
+    self.assertEqual(next_frames.device, device)
+    self.assertEqual(next_dense.device, device)
+
+  def test_batch_consistency_across_multiple_samples(self):
+    """Test that multiple sampling calls return consistent batch formats."""
+    replay_buffer = UniformExperienceReplayBuffer(
+        config={'size': 50},
+        device=self.device,
+        summary_writer=self.mock_summary_writer)
+
+    # Add many experiences
+    for i in range(20):
+      obs = (torch.randn(3, 84, 84), torch.randn(4))
+      next_obs = (torch.randn(3, 84, 84), torch.randn(4))
+      replay_buffer.append(obs, i % 4, float(i), next_obs, i % 5 == 0)
+
+    # Sample different batch sizes and verify consistency
+    for batch_size in [1, 4, 8, 16]:
+      all_obs, all_actions, all_rewards, all_next_obs, all_done = replay_buffer.sample(
+          batch_size)
+
+      frames, dense = all_obs
+      next_frames, next_dense = all_next_obs
+
+      # Verify all tensors have correct batch dimension
+      self.assertEqual(frames.shape[0], batch_size)
+      self.assertEqual(dense.shape[0], batch_size)
+      self.assertEqual(all_actions.shape[0], batch_size)
+      self.assertEqual(all_rewards.shape[0], batch_size)
+      self.assertEqual(all_done.shape[0], batch_size)
+      self.assertEqual(next_frames.shape[0], batch_size)
+      self.assertEqual(next_dense.shape[0], batch_size)
+
+      # Verify tensor shapes are consistent
+      self.assertEqual(frames.shape[1:], (3, 84, 84))
+      self.assertEqual(dense.shape[1:], (4, ))
+      self.assertEqual(next_frames.shape[1:], (3, 84, 84))
+      self.assertEqual(next_dense.shape[1:], (4, ))

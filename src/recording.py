@@ -5,10 +5,8 @@ import os
 class Recording():
   "Collects frames and writes a mp4 video file when done."
 
-  def __init__(self, filename, fps=40):
-    output_dir = "./recording"
-    os.makedirs(output_dir, exist_ok=True)
-    self.output_path = os.path.join(output_dir, filename + ".mp4")
+  def __init__(self, output_path, filename, fps=40):
+    self.output_path = os.path.join(output_path, filename + ".mp4")
     self.fps = fps
     self.frame_size = None
     self.frames = []

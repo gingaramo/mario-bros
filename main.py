@@ -20,23 +20,30 @@ from src.render import render, set_headless_mode
 gym.register_envs(ale_py)
 
 
-def clear_checkpoints(config):
+def clear_checkpoints_dir(config):
   try:
-    shutil.rmtree(f"checkpoint/{config['agent']['name']}")
-    shutil.rmtree(f"runs/tb_{config['agent']['name']}")
+    shutil.rmtree(f"./checkpoint/{config['agent']['name']}")
+    shutil.rmtree(f"./runs/tb_{config['agent']['name']}")
   except FileNotFoundError:
     print("Failed to delete files")
     pass
 
 
+def init_checkpoints_dir(config):
+  os.makedirs(f"./checkpoint/{config['agent']['name']}", exist_ok=True)
+  # We override the config file in the checkpoint directory.
+  shutil.copy(args.config,
+              f"./checkpoint/{config['agent']['name']}/config.yaml")
+
+
 def main(args):
+  args.config = os.path.abspath(args.config)
   print(f"Using configuration file: {args.config}")
   config = yaml.safe_load(open(args.config, 'r'))
-  # Copy the file to the checkpoint directory (create the directory if it doesn't exist)
-  os.makedirs(f"checkpoint/{config['agent']['name']}", exist_ok=True)
-  shutil.copy(args.config, f"checkpoint/{config['agent']['name']}/config.yaml")
+
   if args.restart:
-    clear_checkpoints(config)
+    clear_checkpoints_dir(config)
+  init_checkpoints_dir(config)
 
   set_headless_mode(config['env'].get('headless', False))
   env = create_environment(config['env'])
@@ -55,7 +62,8 @@ def main(args):
   pbar = tqdm(episodes, desc="Starting")
   for episode in pbar:
     if args.record_play:
-      recording = Recording(f"{config['agent']['name']}_{episode}")
+      recording = Recording(f"./checkpoint/{config['agent']['name']}",
+                            f"episode_{episode}")
     agent.episode_begin(recording=args.record_play)
     observation, info = env.reset()
     total_reward = 0
@@ -66,7 +74,7 @@ def main(args):
     for timestep in range(config['env']['max_steps_per_episode']):
       action, q_values = agent.act(observation)
       next_observation, reward, done, truncated, info = env.step(action)
-      done = done or truncated
+      # Currently ignoring truncation.
 
       agent.remember(observation, action, reward, next_observation, done)
       agent.replay()
@@ -75,7 +83,7 @@ def main(args):
 
       observation = next_observation
       total_reward += reward
-      if done:
+      if done or truncated:
         break
     agent.summary_writer.flush()
 

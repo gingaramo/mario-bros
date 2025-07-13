@@ -44,6 +44,8 @@ class DQN(nn.Module):
     for in_, out_ in zip(hidden_layers_dim[:-1], hidden_layers_dim[1:]):
       self.hidden_layers.append(nn.Linear(in_, out_))
 
+    self.activation = torch.relu
+
   def initialize_cnn(self, mock_frame: np.ndarray, config: dict):
     """
     Initializes the CNN layers based on the mock observation and configuration.
@@ -98,7 +100,7 @@ class DQN(nn.Module):
     x = x.flatten(start_dim=1)
     x = torch.concat([x, side_input], dim=1)
     for hidden_layer in self.hidden_layers[:-1]:
-      x = torch.relu(hidden_layer(x))
+      x = self.activation(hidden_layer(x))
     # Last layer without relu
     x = self.hidden_layers[-1](x)
 

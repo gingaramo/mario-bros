@@ -74,22 +74,24 @@ class Observation(object):
     return f"Observation(frame={self.frame.shape if self.frame is not None else None}, " \
            f"dense={self.dense.shape if self.dense is not None else None})"
 
-  def as_input(self, device: torch.device) -> List[torch.Tensor]:
+  def as_input(self,
+               device: torch.device) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Returns the observation as a pair of numpy arrays suitable for model input.
 
     Returns:
-      List containing the frame and dense vector, using an empty vector in lieu of any missing component.
+      Tuple containing the frame and dense vector, using an empty vector in lieu of any missing component.
     """
     inputs = [
         torch.empty(0) if self.frame is None else self.frame,
         torch.empty(0) if self.dense is None else self.dense
     ]
-    return [
+    converted_inputs = [
         input.clone().detach().to(device).float() if torch.is_tensor(input)
         else torch.tensor(input, device=device, dtype=torch.float32)
         for input in inputs
     ]
+    return tuple(converted_inputs)
 
 
 class ObservationWrapper(gym.Wrapper):

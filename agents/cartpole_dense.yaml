@@ -1,0 +1,56 @@
+device: mps
+
+env:
+  env_name: CartPole-v1
+  # Order of wrappers is important, as some wrappers depend on others.
+  env_wrappers:
+    - CaptureRenderFrameEnv
+  ObservationWrapper:
+    input: dense
+  CaptureRenderFrameEnv:
+    mode: capture  # Options: 'capture', 'replace'
+
+  env_action_labels: [LEFT, RIGHT]
+  num_episodes: 500
+  max_steps_per_episode: 500
+  headless: true
+
+agent:
+  name: dense_cartpole_4x_batch_2x_updates_prioritized
+  gamma: 0.99
+
+  epsilon: 1.0
+  epsilon_min: 0.05
+  epsilon_linear_decay: 0.00008
+
+  batch_size: 256
+  min_memory_size: 256
+  loss: mse
+  clip_gradients: 1.0
+
+  # Optimizer settings
+  optimizer: adam
+  learning_rate: 0.0005
+  lr_scheduler:
+    type: lr_scheduler.LinearLR
+    args:
+      start_factor: 1
+      end_factor: 0.5
+      total_iters: 5000
+
+  action_selection: max
+  double_dqn: false
+
+  replay_buffer:
+    type: prioritized
+    size: 100000
+    alpha: 0.6  # Prioritization exponent
+    beta: 0.7  # Importance sampling exponent
+
+  replay_every_n_steps: 1
+  replays_until_target_update: 250
+
+  network:
+    dqn:
+      hidden_layers: [32, 32]
+

@@ -10,7 +10,7 @@ from src.tb_logging import GlobalStepSummaryWriter as SummaryWriter
 from src.dqn import DQN
 from src.environment import Observation
 from src.state import State
-from src.replay_buffer import ReplayBuffer
+from src.replay_buffer import UniformExperienceReplayBuffer, PrioritizedExperienceReplayBuffer
 import pickle
 from torch.optim import lr_scheduler
 
@@ -76,8 +76,19 @@ class Agent:
                                         max_queue=10000,
                                         flush_secs=60,
                                         purge_step=self.global_step)
-    self.replay_buffer = ReplayBuffer(config['replay_buffer'], device,
-                                      self.summary_writer)
+
+    replay_buffer_config = config.get('replay_buffer', {
+        'type': 'uniform',
+        'size': 100000
+    })
+    if replay_buffer_config['type'] == 'uniform':
+      self.replay_buffer = UniformExperienceReplayBuffer(
+          replay_buffer_config, device, self.summary_writer)
+    elif replay_buffer_config['type'] == 'prioritized':
+      self.replay_buffer = PrioritizedExperienceReplayBuffer(
+          replay_buffer_config, device, self.summary_writer,
+          lambda *args, **kwargs: self.compute_target(*args, **kwargs),
+          lambda *args, **kwargs: self.compute_prediction(*args, **kwargs))
 
     # Action selection parameters.
     self.action_selection = config.get('action_selection', 'max')
@@ -172,19 +183,9 @@ class Agent:
     return torch.nn.utils.clip_grad_norm_(self.model.parameters(),
                                           float('inf'))
 
-  def replay(self):
-    if self.recording:
-      return
-    if len(self.replay_buffer) < self.batch_size:
-      return
-    if len(self.replay_buffer) < self.config.get('min_memory_size', 0):
-      return
-    if self.global_step % self.replay_every_n_steps != 0:
-      return
-    # Gather ids to fix memory_error later on
-
-    (all_observation, all_action, all_reward, all_next_observation,
-     all_done) = self.replay_buffer.sample(self.batch_size)
+  def compute_target(self, all_reward: torch.Tensor,
+                     all_next_observation: torch.Tensor,
+                     all_done: torch.Tensor) -> torch.Tensor:
     with torch.no_grad():
       # Double DQN is the next line:
       if self.config.get('double_dqn', True):
@@ -200,23 +201,45 @@ class Agent:
         # Use the target model to get the Q-value for the next state
         q_next = self.target_model(all_next_observation,
                                    training=True).max(dim=1).values
-      target = all_reward + self.gamma * q_next * (~all_done)
+      return all_reward + self.gamma * q_next * (~all_done)
 
+  def compute_prediction(self, all_observation: torch.Tensor,
+                         all_action: torch.Tensor) -> torch.Tensor:
     q_values = self.model(all_observation, training=True)
-    q_pred = torch.gather(q_values, 1, all_action.view(-1, 1)).squeeze(1)
-    # if self.memory_selection == 'prioritized':
-    #   # Update memory error with new memory error
-    #   new_memory_error = [
-    #       td_error(p, t)**self.memory_selection_alpha
-    #       for p, t in zip(q_pred.flatten().cpu().detach().numpy(),
-    #                       target.flatten().cpu().detach().numpy())
-    #   ]
-    #   for idx, err in zip(minibatch_ids, np.abs(new_memory_error)):
-    #     self.memory_error[idx] = err
-    #   per_experience_loss = self.get_loss(reduction='none')(q_pred, target)
-    #   loss = torch.mean(per_experience_loss * wis_weights)
-    # elif self.memory_selection == 'uniform':
-    loss = self.get_loss()(q_pred, target)
+    return torch.gather(q_values, 1, all_action.view(-1, 1)).squeeze(1)
+
+  def replay(self):
+    if self.recording:
+      return
+    if len(self.replay_buffer) < self.batch_size:
+      return
+    if len(self.replay_buffer) < self.config.get('min_memory_size', 0):
+      return
+    if self.global_step % self.replay_every_n_steps != 0:
+      return
+    # Gather ids to fix memory_error later on
+    # If this is importance sampling, we need to get the weights
+    if isinstance(self.replay_buffer, PrioritizedExperienceReplayBuffer):
+      # Sample from the replay buffer
+      (all_observation, all_action, all_reward, all_next_observation,
+       all_done), importance_sampling = self.replay_buffer.sample(
+           self.batch_size)
+      importance_sampling = torch.Tensor(importance_sampling).to(self.device)
+    else:
+      # Sample from the replay buffer without importance sampling
+      (all_observation, all_action, all_reward, all_next_observation,
+       all_done) = self.replay_buffer.sample(self.batch_size)
+      importance_sampling = torch.ones(self.batch_size, device=self.device)
+
+    target = self.compute_target(all_reward, all_next_observation, all_done)
+    prediction = self.compute_prediction(all_observation, all_action)
+
+    self.optimizer.zero_grad()
+    loss = self.get_loss(reduction='none')(prediction, target)
+    loss = (loss * importance_sampling.view(-1, 1)).sum() / self.batch_size
+    loss.backward()
+    pre_clip_grad_norm = self.clip_gradients()
+    self.optimizer.step()
 
     # Update target model every `target_update_frequency` steps
     self.replays_until_target_update -= 1
@@ -228,10 +251,6 @@ class Agent:
                                      self.target_updates_counter)
       self.target_model.load_state_dict(self.model.state_dict())
 
-    self.optimizer.zero_grad()
-    loss.backward()
-    pre_clip_grad_norm = self.clip_gradients()
-    self.optimizer.step()
     if self.lr_scheduler:
       self.lr_scheduler.step()
     if self.epsilon > self.epsilon_min:
@@ -243,14 +262,15 @@ class Agent:
     self.summary_writer.add_scalar('Replay/Loss', loss)
     self.summary_writer.add_scalar('Replay/LearningRate',
                                    self.optimizer.param_groups[0]['lr'])
-    self.summary_writer.add_scalar('Replay/Q-mean',
-                                   torch.mean(q_values.flatten()))
     self.summary_writer.add_scalar('Replay/Epsilon', self.epsilon)
     self.summary_writer.add_scalar(
-        "Replay/PreClipParamNorm",
+        "Replay/ParamNorm",
         torch.nn.utils.get_total_norm(self.model.parameters()))
     self.summary_writer.add_scalar("Replay/PreClipGradNorm",
                                    pre_clip_grad_norm)
+    self.summary_writer.add_scalar(
+        "Replay/PreClipGradNormScaleLr",
+        pre_clip_grad_norm * self.optimizer.param_groups[0]['lr'])
 
   def episode_begin(self, recording=False):
     self.recording = recording
