@@ -419,6 +419,10 @@ def create_environment(config: dict) -> gym.Env:
   """
   env = gym.make(config['env_name'], render_mode='rgb_array')
 
+  # Seed the environment if configured
+  if 'seed' in config:
+    env.reset(seed=config['seed'])
+
   # Always wrap with ObservationWrapper first to ensure Observation objects
   env = ObservationWrapper(
       env, config.get('ObservationWrapper', {'input': 'frame'}))

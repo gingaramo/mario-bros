@@ -5,6 +5,7 @@ from nes_py.wrappers import JoypadSpace
 from gym_super_mario_bros.actions import SIMPLE_MOVEMENT
 import ale_py
 import torch
+import random
 from tqdm import tqdm
 import yaml
 import cv2
@@ -18,6 +19,28 @@ from src.recording import Recording
 from src.render import render, set_headless_mode
 
 gym.register_envs(ale_py)
+
+
+def set_seed(seed: int):
+  """Set random seeds for reproducibility across all random number generators."""
+  print(f"Setting random seed to: {seed}")
+
+  # Set Python's random module seed
+  random.seed(seed)
+
+  # Set NumPy's random seed
+  np.random.seed(seed)
+
+  # Set PyTorch's random seed
+  torch.manual_seed(seed)
+
+  # Set CUDA random seed (if using GPU)
+  if torch.cuda.is_available():
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)  # for multi-GPU setups
+    # Make CUDA operations deterministic
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 
 def clear_checkpoints_dir(config):
@@ -41,11 +64,20 @@ def main(args):
   print(f"Using configuration file: {args.config}")
   config = yaml.safe_load(open(args.config, 'r'))
 
+  # Set random seed if configured
+  if 'seed' in config:
+    set_seed(config['seed'])
+
   if args.restart:
     clear_checkpoints_dir(config)
   init_checkpoints_dir(config)
 
   set_headless_mode(config['env'].get('headless', False))
+
+  # Pass seed to environment config if configured
+  if 'seed' in config:
+    config['env']['seed'] = config['seed']
+
   env = create_environment(config['env'])
   action_labels = config['env']['env_action_labels']
 

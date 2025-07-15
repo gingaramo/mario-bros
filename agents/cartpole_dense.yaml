@@ -1,5 +1,8 @@
 device: mps
 
+# For reproducibility.
+seed: 42
+
 env:
   env_name: CartPole-v1
   # Order of wrappers is important, as some wrappers depend on others.
