@@ -217,7 +217,7 @@ class RepeatActionEnv(gym.Wrapper):
 
   def __init__(self, env: gym.Env, config: dict) -> None:
     super().__init__(env)
-    self.num_repeat_action = int(config.get('num_repeat_action', 1))
+    self.num_repeat_action = config.get('num_repeat_action', 1)
     if self.num_repeat_action < 1:
       raise ValueError("num_repeat_action must be >= 1")
 

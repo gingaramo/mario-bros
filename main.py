@@ -16,7 +16,7 @@ import numpy as np
 from src.agent import Agent
 from src.environment import create_environment
 from src.recording import Recording
-from src.render import render, set_headless_mode
+from src.render import render, set_headless_mode, render_model_weights
 
 gym.register_envs(ale_py)
 
@@ -86,6 +86,10 @@ def main(args):
 
   recording = None
   agent = Agent(env, device, config['agent'])
+  # Print model summary and parameter count
+  print(
+      f"Model summary: {agent.model}, Parameters: {sum(p.numel() for p in agent.model.parameters())}"
+  )
 
   if args.record_play:
     episodes = [agent.episodes_trained]
@@ -111,7 +115,12 @@ def main(args):
       agent.remember(observation, action, reward, next_observation, done)
       agent.replay()
 
-      render(env, q_values, action, action_labels, recording=recording)
+      render(env,
+             q_values,
+             action,
+             action_labels,
+             recording=recording,
+             upscale_factor=config.get('render_upscale_factor', 1))
 
       observation = next_observation
       total_reward += reward

@@ -267,7 +267,8 @@ class TestPrioritizedReplayBuffer(unittest.TestCase):
     self.config = {
         'size': 100,
         'alpha': 0.6,  # Prioritization exponent
-        'beta': 0.4  # Importance sampling exponent
+        'beta': 0.4,  # Importance sampling exponent
+        'beta_annealing_steps': 1000  # Beta annealing steps
     }
     self.replay_buffer = PrioritizedExperienceReplayBuffer(
         config=self.config,
@@ -413,9 +414,13 @@ class TestPrioritizedReplayBuffer(unittest.TestCase):
 
     self.replay_buffer.append(obs, 1, 0.5, next_obs, False)
 
-    # Zero surprise should be stored as 0.0 during append
+    # Zero surprise should be stored as (eps)**alpha during append
     self.assertEqual(len(self.replay_buffer.surprise), 1)
-    self.assertEqual(self.replay_buffer.surprise[0], 1e-5)
+    # With eps=1e-3 and alpha=0.6, expected value is (1e-3)**0.6 ≈ 0.0158
+    expected_surprise = (1e-3)**0.6
+    self.assertAlmostEqual(self.replay_buffer.surprise[0],
+                           expected_surprise,
+                           places=3)
 
     # Add another experience with non-zero surprise to avoid division by zero
     self.mock_target_callback.return_value = torch.tensor([3.0])
@@ -425,13 +430,22 @@ class TestPrioritizedReplayBuffer(unittest.TestCase):
 
     # Now we should have one zero and one non-zero surprise
     self.assertEqual(len(self.replay_buffer.surprise), 2)
-    self.assertEqual(self.replay_buffer.surprise[0], 1e-5)
+    # First surprise should be (eps)**alpha = (1e-3)**0.6 ≈ 0.0158
+    expected_surprise = (1e-3)**0.6
+    self.assertAlmostEqual(self.replay_buffer.surprise[0],
+                           expected_surprise,
+                           places=3)
     self.assertGreater(self.replay_buffer.surprise[1], 0.0)
 
   def test_buffer_overflow_maintains_surprise_sync(self):
     """Test that when buffer overflows, surprise values stay synchronized."""
     # Set small buffer size to test overflow
-    small_config = {'size': 3, 'alpha': 0.6, 'beta': 0.4}
+    small_config = {
+        'size': 3,
+        'alpha': 0.6,
+        'beta': 0.4,
+        'beta_annealing_steps': 1000
+    }
     small_buffer = PrioritizedExperienceReplayBuffer(
         config=small_config,
         device=self.device,
@@ -505,13 +519,10 @@ class TestReplayBufferEdgeCases(unittest.TestCase):
     frame_only_obs = (torch.randn(3, 84, 84), torch.tensor(()))
     replay_buffer.append(frame_only_obs, 1, 1.0, frame_only_obs, False)
 
-    # Should be able to sample - the system should handle mixed types
-    all_obs, all_actions, all_rewards, all_next_obs, all_done = replay_buffer.sample(
-        2)
-
-    # Verify basic structure
-    self.assertEqual(all_actions.shape[0], 2)
-    self.assertEqual(all_rewards.shape[0], 2)
+    # Should raise an error when trying to sample mixed types
+    with self.assertRaises(ValueError):
+      all_obs, all_actions, all_rewards, all_next_obs, all_done = replay_buffer.sample(
+          2)
 
   def test_large_batch_sampling(self):
     """Test sampling when batch size equals buffer size."""
@@ -549,11 +560,11 @@ class TestReplayBufferEdgeCases(unittest.TestCase):
     # Verify summary writer was called for each append
     self.assertEqual(mock_writer.add_scalar.call_count, 3)
 
-    # Verify the calls were for memory size logging
+    # Verify the calls were for replay buffer size logging
     calls = mock_writer.add_scalar.call_args_list
     for i, call in enumerate(calls):
       args, kwargs = call
-      self.assertEqual(args[0], 'Memory/Size')
+      self.assertEqual(args[0], 'ReplayBuffer/Size')
       self.assertEqual(args[1], i + 1)  # Size should increment
 
   def test_device_consistency(self):

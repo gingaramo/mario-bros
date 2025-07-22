@@ -7,7 +7,7 @@ import torch.optim as optim
 import math
 import os
 from src.tb_logging import GlobalStepSummaryWriter as SummaryWriter
-from src.dqn import DQN
+from src.dqn import DQN, DuelingDQN
 from src.environment import Observation
 from src.state import State
 from src.replay_buffer import UniformExperienceReplayBuffer, PrioritizedExperienceReplayBuffer
@@ -43,6 +43,7 @@ class Agent:
     self.epsilon_linear_decay = config.get('epsilon_linear_decay', None)
     self.epsilon_exponential_decay = config.get('epsilon_exponential_decay',
                                                 None)
+
     if self.config['loss'] == 'mse':
       self.get_loss = nn.MSELoss
     elif self.config['loss'] == 'smooth_l1':
@@ -84,11 +85,21 @@ class Agent:
     if replay_buffer_config['type'] == 'uniform':
       self.replay_buffer = UniformExperienceReplayBuffer(
           replay_buffer_config, device, self.summary_writer)
+      print(
+          f"Using uniform replay buffer with size {replay_buffer_config['size']}"
+      )
     elif replay_buffer_config['type'] == 'prioritized':
       self.replay_buffer = PrioritizedExperienceReplayBuffer(
           replay_buffer_config, device, self.summary_writer,
           lambda *args, **kwargs: self.compute_target(*args, **kwargs),
           lambda *args, **kwargs: self.compute_prediction(*args, **kwargs))
+      print(
+          f"Using prioritized replay buffer with size {replay_buffer_config['size']}"
+      )
+    else:
+      raise ValueError(
+          f"Unsupported replay buffer type: {replay_buffer_config['type']}. Supported: 'uniform', 'prioritized'."
+      )
 
     # Action selection parameters.
     self.action_selection = config.get('action_selection', 'max')
@@ -99,12 +110,18 @@ class Agent:
     # Episode being recorded? Helps avoid state updates and checkpoints
     self.recording = False
 
-    if 'dqn' in config['network']:
+    if 'dqn' in config['network'] or 'dueling_dqn' in config['network']:
       mock_observation, _ = env.reset()
-      self.model = DQN(self.action_size, mock_observation,
-                       config['network']['dqn'])
-      self.target_model = DQN(self.action_size, mock_observation,
-                              config['network']['dqn'])
+      if 'dqn' in config['network']:
+        self.model = DQN(self.action_size, mock_observation,
+                         config['network']['dqn'])
+        self.target_model = DQN(self.action_size, mock_observation,
+                                config['network']['dqn'])
+      elif 'dueling_dqn' in config['network']:
+        self.model = DuelingDQN(self.action_size, mock_observation,
+                                config['network']['dueling_dqn'])
+        self.target_model = DuelingDQN(self.action_size, mock_observation,
+                                       config['network']['dueling_dqn'])
       if os.path.exists(self.checkpoint_path):
         self.model.load_state_dict(
             torch.load(self.checkpoint_path, map_location=self.device))
@@ -170,8 +187,6 @@ class Agent:
         raise ValueError(
             f"Unsupported action selection method: {self.action_selection}. Supported: 'softmax', 'max'."
         )
-    self.last_q_values = q_values
-    self.last_act_values = act_values
     # Log histogram of act_values (Q-values or softmax probabilities)
     self.summary_writer.add_histogram('Act/ActValues', act_values)
     return action, act_values
@@ -189,7 +204,7 @@ class Agent:
     with torch.no_grad():
       # Double DQN is the next line:
       if self.config.get('double_dqn', True):
-        # Use the model to select the best action for the next state
+        # Use the online model to select the best action for the next state
         # and then use the target model to get the Q-value for that action.
         # This helps reduce overestimation bias.
         idx = torch.argmax(self.model(all_next_observation, training=True),
@@ -236,7 +251,8 @@ class Agent:
 
     self.optimizer.zero_grad()
     loss = self.get_loss(reduction='none')(prediction, target)
-    loss = (loss * importance_sampling.view(-1, 1)).sum() / self.batch_size
+    loss = loss * importance_sampling
+    loss = loss.sum()
     loss.backward()
     pre_clip_grad_norm = self.clip_gradients()
     self.optimizer.step()
@@ -269,8 +285,9 @@ class Agent:
     self.summary_writer.add_scalar("Replay/PreClipGradNorm",
                                    pre_clip_grad_norm)
     self.summary_writer.add_scalar(
-        "Replay/PreClipGradNormScaleLr",
-        pre_clip_grad_norm * self.optimizer.param_groups[0]['lr'])
+        "Replay/GradScaleWithLr",
+        min(pre_clip_grad_norm, self.config['clip_gradients']) *
+        self.optimizer.param_groups[0]['lr'])
 
   def episode_begin(self, recording=False):
     self.recording = recording
