@@ -298,23 +298,18 @@ class TestPrioritizedReplayBuffer(unittest.TestCase):
     self.assertIsNotNone(self.replay_buffer.compute_prediction)
 
   def test_prioritized_append_computes_surprise(self):
-    """Test that appending experiences computes and stores surprise values."""
+    """Test that appending experiences initializes surprise values."""
     obs = self._create_mock_observation_tensors()[0]
     next_obs = self._create_mock_observation_tensors()[0]
 
-    # Mock the callbacks to return known values for testing
-    self.mock_target_callback.return_value = torch.tensor([2.0])
-    self.mock_prediction_callback.return_value = torch.tensor([1.5])
-
     self.replay_buffer.append(obs, 1, 0.5, next_obs, False)
 
-    # Verify surprise was computed and stored
+    # Verify surprise was initialized
     self.assertEqual(len(self.replay_buffer.surprise), 1)
     self.assertGreater(self.replay_buffer.surprise[0], 0)
 
-    # Verify callbacks were called
-    self.mock_target_callback.assert_called_once()
-    self.mock_prediction_callback.assert_called_once()
+    # In the current implementation, callbacks are not called during append
+    # They are used later during sampling/updating
 
   def test_prioritized_sampling_with_importance_weights(self):
     """Test that prioritized sampling returns importance sampling weights."""
@@ -342,11 +337,11 @@ class TestPrioritizedReplayBuffer(unittest.TestCase):
 
     result = self.replay_buffer.sample(batch_size)
 
-    # Should return tuple with (experiences, importance_weights)
+    # Should return tuple with (experiences, importance_weights, indices)
     self.assertIsInstance(result, tuple)
-    self.assertEqual(len(result), 2)
+    self.assertEqual(len(result), 3)
 
-    experiences_tuple, importance_weights = result
+    experiences_tuple, importance_weights, sampled_indices = result
     all_obs, all_actions, all_rewards, all_next_obs, all_done = experiences_tuple
 
     # Verify experience tensors
@@ -373,12 +368,13 @@ class TestPrioritizedReplayBuffer(unittest.TestCase):
     # Store initial surprise values
     initial_surprises = list(self.replay_buffer.surprise)
 
-    # Mock new target/prediction values for sampling (match batch size of 3)
-    self.mock_target_callback.return_value = torch.tensor([2.0, 2.5, 3.0])
-    self.mock_prediction_callback.return_value = torch.tensor([1.0, 1.5, 2.0])
-
-    # Sample and verify surprise values were updated
+    # Sample experiences
     result = self.replay_buffer.sample(3)
+    experiences_tuple, importance_weights, sampled_indices = result
+
+    # Simulate TD errors for updating surprise values
+    td_errors = np.array([0.5, 1.0, 1.5])  # Different TD errors
+    self.replay_buffer.update_surprise(sampled_indices, td_errors)
 
     # At least some surprise values should have changed
     current_surprises = list(self.replay_buffer.surprise)
@@ -405,37 +401,25 @@ class TestPrioritizedReplayBuffer(unittest.TestCase):
 
   def test_zero_surprise_handling(self):
     """Test that prioritized buffer handles experiences with zero surprise correctly."""
-    # Mock callbacks to return identical values (zero surprise)
-    self.mock_target_callback.return_value = torch.tensor([2.0])
-    self.mock_prediction_callback.return_value = torch.tensor([2.0])
-
     obs = self._create_mock_observation_tensors()[0]
     next_obs = self._create_mock_observation_tensors()[0]
 
     self.replay_buffer.append(obs, 1, 0.5, next_obs, False)
 
-    # Zero surprise should be stored as (eps)**alpha during append
+    # New experiences are initialized with a default value (1.0 for first experience)
     self.assertEqual(len(self.replay_buffer.surprise), 1)
-    # With eps=1e-3 and alpha=0.6, expected value is (1e-3)**0.6 ≈ 0.0158
+    self.assertEqual(self.replay_buffer.surprise[0], 1.0)
+
+    # Test updating with zero TD error
+    sampled_indices = [0]
+    td_errors = np.array([0.0])  # Zero TD error
+    self.replay_buffer.update_surprise(sampled_indices, td_errors)
+
+    # After update, surprise should be (0 + eps)^alpha = (1e-3)^0.6 ≈ 0.0158
     expected_surprise = (1e-3)**0.6
     self.assertAlmostEqual(self.replay_buffer.surprise[0],
                            expected_surprise,
                            places=3)
-
-    # Add another experience with non-zero surprise to avoid division by zero
-    self.mock_target_callback.return_value = torch.tensor([3.0])
-    self.mock_prediction_callback.return_value = torch.tensor([2.0])
-
-    self.replay_buffer.append(obs, 2, 1.0, next_obs, False)
-
-    # Now we should have one zero and one non-zero surprise
-    self.assertEqual(len(self.replay_buffer.surprise), 2)
-    # First surprise should be (eps)**alpha = (1e-3)**0.6 ≈ 0.0158
-    expected_surprise = (1e-3)**0.6
-    self.assertAlmostEqual(self.replay_buffer.surprise[0],
-                           expected_surprise,
-                           places=3)
-    self.assertGreater(self.replay_buffer.surprise[1], 0.0)
 
   def test_buffer_overflow_maintains_surprise_sync(self):
     """Test that when buffer overflows, surprise values stay synchronized."""
@@ -511,18 +495,31 @@ class TestReplayBufferEdgeCases(unittest.TestCase):
         device=self.device,
         summary_writer=self.mock_summary_writer)
 
-    # First add frame+dense observation
+    # Add multiple observations to ensure we get mixed types when sampling
     frame_dense_obs = (torch.randn(3, 84, 84), torch.randn(4))
-    replay_buffer.append(frame_dense_obs, 0, 1.0, frame_dense_obs, False)
-
-    # Then add frame-only observation
     frame_only_obs = (torch.randn(3, 84, 84), torch.tensor(()))
-    replay_buffer.append(frame_only_obs, 1, 1.0, frame_only_obs, False)
+    
+    # Add several of each type to increase chances of sampling mixed types
+    for _ in range(5):
+      replay_buffer.append(frame_dense_obs, 0, 1.0, frame_dense_obs, False)
+    for _ in range(5):
+      replay_buffer.append(frame_only_obs, 1, 1.0, frame_only_obs, False)
 
-    # Should raise an error when trying to sample mixed types
-    with self.assertRaises(ValueError):
-      all_obs, all_actions, all_rewards, all_next_obs, all_done = replay_buffer.sample(
-          2)
+    # Try sampling many times - should eventually get mixed types and raise error
+    error_raised = False
+    for attempt in range(100):  # Try many times to get mixed sampling
+      try:
+        all_obs, all_actions, all_rewards, all_next_obs, all_done = replay_buffer.sample(6)
+        # If we get here without an error, the batch happened to be homogeneous
+      except ValueError as e:
+        if "Mixed observation types not supported" in str(e):
+          error_raised = True
+          break
+        else:
+          raise  # Re-raise if it's a different ValueError
+    
+    # Should have raised the mixed types error at least once
+    self.assertTrue(error_raised, "Expected ValueError for mixed observation types was never raised")
 
   def test_large_batch_sampling(self):
     """Test sampling when batch size equals buffer size."""

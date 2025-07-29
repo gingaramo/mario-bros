@@ -5,6 +5,12 @@ import torch
 import numpy as np
 import math
 
+# Handle imports for both module-style and direct execution
+try:
+  import src.sum_tree as sum_tree
+except ImportError:
+  import sum_tree
+
 
 class ReplayBuffer(object):
   """
@@ -48,7 +54,7 @@ class ReplayBuffer(object):
 
       # Check if ALL observations have frame data (must be consistent)
       frame_shapes = [obs[0].shape for obs in observations]
-      has_frames = [len(shape) > 0 for shape in frame_shapes]
+      has_frames = [obs[0].numel() > 0 for obs in observations]
 
       # Check for mixed frame types (some have frames, some don't)
       if not (all(has_frames) or not any(has_frames)):
@@ -77,7 +83,7 @@ class ReplayBuffer(object):
 
       # Check if ALL observations have dense data (must be consistent)
       dense_shapes = [obs[1].shape for obs in observations]
-      has_dense = [len(shape) > 0 for shape in dense_shapes]
+      has_dense = [obs[1].numel() > 0 for obs in observations]
 
       # Check for mixed dense types (some have dense, some don't)
       if not (all(has_dense) or not any(has_dense)):
@@ -178,7 +184,7 @@ class PrioritizedExperienceReplayBuffer(ReplayBuffer):
     super().__init__(config, device, summary_writer)
     self.alpha = config['alpha']  # Prioritization exponent
     self.beta = config['beta']  # Importance sampling exponent
-    self.surprise = deque(maxlen=config['size'])
+    self.surprise = sum_tree.SumTree(config['size'])
     self.compute_target = target_callback
     self.compute_prediction = prediction_callback
     self.eps = 1e-3  # Non-zero sampling probability.
@@ -189,14 +195,9 @@ class PrioritizedExperienceReplayBuffer(ReplayBuffer):
     lerp = min(1.0, self.annealing_steps_taken / self.annealing_steps)
     return self.beta * (1 - lerp) + lerp * 1.0
 
-  def compute_surprise(self, all_observation, all_action, all_reward,
-                       all_next_observation, all_done):
-    """Computes the surprise (TD-error) for a batch of experiences."""
-    with torch.no_grad():
-      return (torch.abs(
-          self.compute_target(all_reward, all_next_observation, all_done) -
-          self.compute_prediction(all_observation, all_action)).cpu().numpy() +
-              self.eps)**self.alpha
+  def compute_surprise(self, deltas):
+    """Computes the surprise (TD-error) for a list of deltas."""
+    return (np.abs(deltas) + self.eps)**self.alpha
 
   def sample(self, batch_size):
     if len(self) < batch_size:
@@ -207,39 +208,16 @@ class PrioritizedExperienceReplayBuffer(ReplayBuffer):
     self.summary_writer.add_scalar('ReplayBuffer/Alpha', self.alpha)
     self.summary_writer.add_scalar('ReplayBuffer/Beta', self.get_beta())
 
-    # Ensure minimum surprise values to prevent zero probabilities
-    surprise_array = np.array(self.surprise)
-    surprise_sum = np.sum(surprise_array)
+    samples = np.random.uniform(0, self.surprise.get_sum(), size=batch_size)
+    indices = [self.surprise.find_index(sample) for sample in samples]
+    min_prob = self.surprise.get_min() / self.surprise.get_sum()
 
-    # Handle edge case where all surprises are zero
-    if surprise_sum == 0:
-      # Fall back to uniform sampling if all surprises are zero
-      probs = np.ones(len(self.surprise)) / len(self.surprise)
-    else:
-      probs = surprise_array / surprise_sum
-
-    indices = np.random.choice(len(self.surprise), size=batch_size, p=probs)
+    importance_sampling = np.array([
+        (min_prob / (self.surprise.get_value(i) / self.surprise.get_sum())
+         )**self.get_beta() for i in indices
+    ])
 
     minibatch = [self.buffer[i] for i in indices]
-    importance_sampling = np.array([
-        (len(self.surprise) * probs[i])**-self.get_beta() for i in indices
-    ])
-    # Reduce the impact of large weights
-    importance_sampling = np.clip(importance_sampling, 0, 1e3)
-
-    # importance_sampling = np.log(importance_sampling + 1 + self.eps) -- Worked, but was a bit weird heuristic
-    # From paper: for stability reasons, we always normalize weights by 1/ maxi wi so
-    # that they only scale the update downwards.
-    min_prob = np.min([i for i in probs])
-    #if min_prob > 0:  # Avoid division by zero
-    # TODO: Add back
-    importance_sampling = importance_sampling / (
-        (len(self.surprise) * min_prob)**-self.get_beta())
-    # pass
-    #else:
-    #  # If min_prob is 0, use uniform importance sampling
-    #  importance_sampling = np.ones_like(importance_sampling)
-
     all_observation, all_action, all_reward, all_next_observation, all_done = zip(
         *minibatch)
 
@@ -247,29 +225,20 @@ class PrioritizedExperienceReplayBuffer(ReplayBuffer):
         all_observation, all_action, all_reward, all_next_observation,
         all_done)
 
-    surprises = self.compute_surprise(all_observation, all_action, all_reward,
-                                      all_next_observation, all_done)
-
-    # Update the surprise values for the sampled indices.
-    for i, idx in enumerate(indices):
-      self.surprise[idx] = surprises[i]
-
     return (all_observation, all_action, all_reward, all_next_observation,
-            all_done), importance_sampling
+            all_done), importance_sampling, indices
+
+  def update_surprise(self, indices: List[int], deltas: np.array):
+    """Updates the surprise values for the given indices with the new deltas."""
+    surprises = self.compute_surprise(deltas)
+    for idx, surprise in zip(indices, surprises):
+      self.surprise.update(idx, surprise)
 
   def append(self, observation: Tuple[torch.Tensor, torch.Tensor], action: int,
              reward: float, next_observation: Tuple[torch.Tensor,
                                                     torch.Tensor], done: bool):
     super().append(observation, action, reward, next_observation, done)
 
-    observation, action, reward, next_observation, done = self.from_list_to_tensors(
-        [observation], [action], [reward], [next_observation], [done])
-
-    with torch.no_grad():
-      surprise_value = self.compute_surprise(observation, action, reward,
-                                             next_observation, done).item()
-      self.surprise.append(surprise_value)
-
-    # Ensure synchronization: both deques should always have the same length
-    assert len(self.buffer) == len(self.surprise), \
-        f"Buffer and surprise deques out of sync: {len(self.buffer)} vs {len(self.surprise)}"
+    # Initialize with a large value, so each new experience is visited at least once
+    self.surprise.add(self.surprise.get_max() if self.surprise.get_sum() >
+                      0 else 1.0)

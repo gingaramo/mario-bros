@@ -83,10 +83,11 @@ def frame_q_values_bar(q_values_norm,
                        action,
                        width=256,
                        height=40,
-                       labels=None):
+                       labels=None,
+                       q_values_orig=None):
   n_actions = len(q_values_norm)
-  bar_img = np.zeros((height + 16, width, 3),
-                     dtype=np.uint8)  # Extra space for labels
+  bar_img = np.zeros((height + 32, width, 3),
+                     dtype=np.uint8)  # Extra space for labels and Q-values
   bar_width = width // n_actions
   for i, q in enumerate(q_values_norm):
     # Height proportional to Q-value
@@ -110,6 +111,19 @@ def frame_q_values_bar(q_values_norm,
       text_y = height + 12
       cv2.putText(bar_img, label, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX,
                   font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
+
+    # Draw Q-value if provided
+    if q_values_orig is not None:
+      q_val_text = f"{q_values_orig[i]:.2f}"
+      font_scale = 0.35
+      thickness = 1
+      text_size = cv2.getTextSize(q_val_text, cv2.FONT_HERSHEY_SIMPLEX,
+                                  font_scale, thickness)[0]
+      text_x = i * bar_width + (bar_width - text_size[0]) // 2
+      text_y = height + 28
+      cv2.putText(bar_img, q_val_text, (text_x, text_y),
+                  cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 0),
+                  thickness, cv2.LINE_AA)  # Yellow color
   return bar_img
 
 
@@ -130,7 +144,8 @@ def frame_with_q_values(next_state, q_values, action, labels, upscale_factor):
   q_bar = frame_q_values_bar(q_values_norm,
                              action,
                              width=next_state_up.shape[1],
-                             labels=labels)
+                             labels=labels,
+                             q_values_orig=q_values)
   frame_with_q = np.vstack((next_state_up, q_bar))
   return frame_with_q
 

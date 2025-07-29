@@ -15,11 +15,6 @@ import pickle
 from torch.optim import lr_scheduler
 
 
-def td_error(q_value: float, reward: float):
-  error_epsilon = 1e-2  # ensures sampling for all (even zero error) experiences
-  return math.fabs(q_value - reward) + error_epsilon
-
-
 class Agent:
 
   def __init__(self, env, device, config):
@@ -63,19 +58,19 @@ class Agent:
         or not os.path.exists(self.checkpoint_state_path)):
       self.episodes_trained = 0
       self.global_step = 0
-      self.epsilon = config['epsilon']
+      self.initial_epsilon = config['epsilon']
     else:
       with open(self.checkpoint_state_path, "rb") as f:
         state = pickle.load(f)
         self.episodes_trained = state['episodes_trained']
         self.global_step = state['global_step']
-        self.epsilon = state['epsilon']
+        self.initial_epsilon = state['initial_epsilon']
         print(
             f'Resuming from checkpoint. Episode {self.episodes_trained}, global step {self.global_step}'
         )
     self.summary_writer = SummaryWriter(log_dir=f"runs/tb_{config['name']}",
-                                        max_queue=10000,
-                                        flush_secs=60,
+                                        max_queue=100000,
+                                        flush_secs=300,
                                         purge_step=self.global_step)
 
     replay_buffer_config = config.get('replay_buffer', {
@@ -126,10 +121,21 @@ class Agent:
         self.model.load_state_dict(
             torch.load(self.checkpoint_path, map_location=self.device))
       self.target_model.load_state_dict(self.model.state_dict())
+      # Set the target model to eval mode
+      self.target_model.eval()
     else:
       raise ValueError("Network configuration must include a valid model.")
     self.model.to(self.device)
     self.target_model.to(self.device)
+
+    # Curiosity module
+    self.curiosity_module = None
+    if 'curiosity' in config:
+      from src.curiosity import CuriosityModule
+      self.curiosity_module = CuriosityModule(config['curiosity'], self.model)
+      self.curiosity_module.to(self.device)
+      print("Curiosity module initialized.")
+
     if config['optimizer'] == 'adam':
       self.optimizer = optim.Adam(self.model.parameters(),
                                   lr=self.learning_rate)
@@ -142,6 +148,16 @@ class Agent:
       exec(
           f"self.lr_scheduler = {config['lr_scheduler']['type']}(self.optimizer, **{config['lr_scheduler']['args']})"
       )
+
+  @property
+  def epsilon(self):
+    if self.epsilon_exponential_decay:
+      eps = self.initial_epsilon * (self.epsilon_exponential_decay**
+                                    self.global_step)
+    elif self.epsilon_linear_decay:
+      eps = self.initial_epsilon - (self.epsilon_linear_decay *
+                                    self.global_step)
+    return max(eps, self.epsilon_min)
 
   def remember(self, observation: Observation, action: int, reward: float,
                next_observation: Observation, done: bool):
@@ -187,8 +203,6 @@ class Agent:
         raise ValueError(
             f"Unsupported action selection method: {self.action_selection}. Supported: 'softmax', 'max'."
         )
-    # Log histogram of act_values (Q-values or softmax probabilities)
-    self.summary_writer.add_histogram('Act/ActValues', act_values)
     return action, act_values
 
   def clip_gradients(self):
@@ -199,7 +213,7 @@ class Agent:
                                           float('inf'))
 
   def compute_target(self, all_reward: torch.Tensor,
-                     all_next_observation: torch.Tensor,
+                     all_next_observation: Tuple[torch.Tensor, torch.Tensor],
                      all_done: torch.Tensor) -> torch.Tensor:
     with torch.no_grad():
       # Double DQN is the next line:
@@ -216,9 +230,10 @@ class Agent:
         # Use the target model to get the Q-value for the next state
         q_next = self.target_model(all_next_observation,
                                    training=True).max(dim=1).values
-      return all_reward + self.gamma * q_next * (~all_done)
+      return all_reward + self.gamma * q_next * (1.0 - all_done.float())
 
-  def compute_prediction(self, all_observation: torch.Tensor,
+  def compute_prediction(self, all_observation: Tuple[torch.Tensor,
+                                                      torch.Tensor],
                          all_action: torch.Tensor) -> torch.Tensor:
     q_values = self.model(all_observation, training=True)
     return torch.gather(q_values, 1, all_action.view(-1, 1)).squeeze(1)
@@ -226,9 +241,8 @@ class Agent:
   def replay(self):
     if self.recording:
       return
-    if len(self.replay_buffer) < self.batch_size:
-      return
-    if len(self.replay_buffer) < self.config.get('min_memory_size', 0):
+    if len(self.replay_buffer) < max(self.batch_size,
+                                     self.config['min_memory_size']):
       return
     if self.global_step % self.replay_every_n_steps != 0:
       return
@@ -236,8 +250,8 @@ class Agent:
     # If this is importance sampling, we need to get the weights
     if isinstance(self.replay_buffer, PrioritizedExperienceReplayBuffer):
       # Sample from the replay buffer
-      (all_observation, all_action, all_reward, all_next_observation,
-       all_done), importance_sampling = self.replay_buffer.sample(
+      (all_observation, all_action, all_reward, all_next_observation, all_done
+       ), importance_sampling, sampled_indices = self.replay_buffer.sample(
            self.batch_size)
       importance_sampling = torch.Tensor(importance_sampling).to(self.device)
     else:
@@ -250,7 +264,24 @@ class Agent:
     prediction = self.compute_prediction(all_observation, all_action)
 
     self.optimizer.zero_grad()
+    if isinstance(self.replay_buffer, PrioritizedExperienceReplayBuffer):
+      # Update the surprise values in the replay buffer
+      self.replay_buffer.update_surprise(
+          sampled_indices, (prediction - target).detach().cpu().numpy())
     loss = self.get_loss(reduction='none')(prediction, target)
+    if self.curiosity_module:
+      curiosity_reward = self.curiosity_module(all_observation,
+                                               all_action,
+                                               all_next_observation,
+                                               training=True)
+      assert loss.shape == curiosity_reward.shape, \
+          f"Loss shape {loss.shape} does not match curiosity reward shape {curiosity_reward.shape}"
+      self.summary_writer.add_scalar('Replay/CuriosityReward',
+                                     curiosity_reward.sum())
+      self.summary_writer.add_scalar('Replay/CuriosityRewardMean',
+                                     curiosity_reward.mean())
+      loss = loss + curiosity_reward
+
     loss = loss * importance_sampling
     loss = loss.sum()
     loss.backward()
@@ -265,15 +296,15 @@ class Agent:
       self.target_updates_counter += 1
       self.summary_writer.add_scalar("Replay/TargetUpdate",
                                      self.target_updates_counter)
-      self.target_model.load_state_dict(self.model.state_dict())
+      # Soft update with 10% interpolation (tau = 0.1)
+      tau = 0.1
+      for target_param, local_param in zip(self.target_model.parameters(),
+                                           self.model.parameters()):
+        target_param.data.copy_(tau * local_param.data +
+                                (1.0 - tau) * target_param.data)
 
     if self.lr_scheduler:
       self.lr_scheduler.step()
-    if self.epsilon > self.epsilon_min:
-      if self.epsilon_exponential_decay:
-        self.epsilon *= self.epsilon_exponential_decay
-      elif self.epsilon_linear_decay:
-        self.epsilon -= self.epsilon_linear_decay
 
     self.summary_writer.add_scalar('Replay/Loss', loss)
     self.summary_writer.add_scalar('Replay/LearningRate',
@@ -309,6 +340,6 @@ class Agent:
           {
               'episodes_trained': self.episodes_trained,
               'global_step': self.global_step,
-              'epsilon': self.epsilon
+              'initial_epsilon': self.initial_epsilon,
           }, f)
     self.summary_writer.flush()

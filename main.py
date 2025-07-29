@@ -2,6 +2,8 @@ import argparse
 import gymnasium as gym
 import gym_super_mario_bros  # Keep (environment registration)
 from nes_py.wrappers import JoypadSpace
+from pynput import keyboard
+import threading
 from gym_super_mario_bros.actions import SIMPLE_MOVEMENT
 import ale_py
 import torch
@@ -19,6 +21,30 @@ from src.recording import Recording
 from src.render import render, set_headless_mode, render_model_weights
 
 gym.register_envs(ale_py)
+
+FRAMES_FORWARD = -1
+
+
+def on_press(key):
+  global FRAMES_FORWARD
+  try:
+    if key.char == 'c':
+      FRAMES_FORWARD = -1
+    if key.char == 'n':
+      FRAMES_FORWARD = 1
+  except AttributeError:
+    pass
+
+
+def start_keyboard_listener():
+  listener = keyboard.Listener(on_press=on_press)
+  listener.start()
+  return listener
+
+
+keyboard_thread = threading.Thread(target=start_keyboard_listener)
+keyboard_thread.daemon = True
+keyboard_thread.start()
 
 
 def set_seed(seed: int):
@@ -108,9 +134,28 @@ def main(args):
       print(f"Maximum number of steps {config['env']['max_num_steps']}")
       break
     for timestep in range(config['env']['max_steps_per_episode']):
+      global FRAMES_FORWARD
+      while FRAMES_FORWARD >= 0:
+        if FRAMES_FORWARD > 0:
+          FRAMES_FORWARD -= 1
+          break
+        pass
       action, q_values = agent.act(observation)
       next_observation, reward, done, truncated, info = env.step(action)
       # Currently ignoring truncation.
+
+      if agent.curiosity_module:
+        with torch.no_grad():
+          frame, dense = observation.as_input(device)
+          next_frame, next_dense = next_observation.as_input(device)
+          curiosity_reward = agent.curiosity_module(
+              (frame.unsqueeze(0).clone().detach().to(device),
+               dense.clone().detach().to(device)),
+              torch.tensor(action, dtype=torch.long).to(device),
+              (next_frame.unsqueeze(0).clone().detach().to(device),
+               next_dense.clone().detach().to(device)),
+              training=False)
+          reward += curiosity_reward.item()
 
       agent.remember(observation, action, reward, next_observation, done)
       agent.replay()

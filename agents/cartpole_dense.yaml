@@ -5,7 +5,6 @@ seed: 42
 
 env:
   env_name: CartPole-v1
-  # Order of wrappers is important, as some wrappers depend on others.
   env_wrappers:
     - CaptureRenderFrameEnv
   ObservationWrapper:
@@ -16,44 +15,46 @@ env:
   env_action_labels: [LEFT, RIGHT]
   num_episodes: 500
   max_steps_per_episode: 500
-  headless: true
+  headless: false
 
 agent:
-  name: dense_cartpole_4x_batch_2x_updates_prioritized
+  name: cartpole_dense
   gamma: 0.99
 
   epsilon: 1.0
   epsilon_min: 0.05
-  epsilon_linear_decay: 0.00008
+  epsilon_exponential_decay: 0.999
 
-  batch_size: 256
-  min_memory_size: 256
+  batch_size: 512
+  min_memory_size: 512
   loss: mse
-  clip_gradients: 1.0
+  clip_gradients: 10.0
 
   # Optimizer settings
   optimizer: adam
-  learning_rate: 0.0005
+  learning_rate: 0.001
   lr_scheduler:
     type: lr_scheduler.LinearLR
     args:
       start_factor: 1
-      end_factor: 0.5
-      total_iters: 5000
+      end_factor: 0.2
+      total_iters: 25000
 
   action_selection: max
-  double_dqn: false
+  double_dqn: true
 
   replay_buffer:
     type: prioritized
-    size: 100000
-    alpha: 0.6  # Prioritization exponent
-    beta: 0.7  # Importance sampling exponent
+    size: 10000
+    alpha: 0.4 # Bias towards high surprise
+    beta: 0.6 # Importance sampling exponent
+    beta_annealing_steps: 20000
 
   replay_every_n_steps: 1
-  replays_until_target_update: 250
+  replays_until_target_update: 5
 
   network:
-    dqn:
-      hidden_layers: [32, 32]
+    dueling_dqn:
+      value_hidden_layers: [32, 32]
+      advantage_hidden_layers: [32, 32]
 

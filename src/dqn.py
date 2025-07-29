@@ -7,6 +7,13 @@ import src.render as render
 from src.environment import Observation
 
 
+def _create_mlp(hidden_layers_dim: list):
+  hidden_layers = nn.ModuleList()
+  for in_, out_ in zip(hidden_layers_dim[:-1], hidden_layers_dim[1:]):
+    hidden_layers.append(nn.Linear(in_, out_))
+  return hidden_layers
+
+
 class BaseDQN(nn.Module):
 
   def __init__(self, action_size: int, mock_observation: Observation,
@@ -32,7 +39,7 @@ class BaseDQN(nn.Module):
         self.flattened_cnn_dim +
         (mock_observation.dense.shape[0] if has_dense_input else 0))
 
-    self.activation = torch.relu
+    self.activation = torch.nn.LeakyReLU()
 
   def initialize_cnn(self, mock_frame: np.ndarray, config: dict):
     """
@@ -74,18 +81,21 @@ class BaseDQN(nn.Module):
     # Flatten but preserve batch dimension
     return x.flatten(start_dim=1)
 
-  def forward_dense(self, x: torch.Tensor) -> torch.Tensor:
+  def forward_dense(self, x: torch.Tensor, training: bool) -> torch.Tensor:
     raise NotImplementedError(
         "Implement this method in subclasses. Either regular DQN or DuelingDQN."
     )
 
-  def forward_dqn(self, x: torch.Tensor, side_input: torch.Tensor):
+  def forward_dqn(self,
+                  x: torch.Tensor,
+                  side_input: torch.Tensor,
+                  training: bool = False) -> torch.Tensor:
     "Forward pass for DQN model. Expects batch dimension"
     if self.convolutions:
       x = self.forward_cnn(x)
     # Side input might be an empty tensor.
     x = torch.concat([x, side_input], dim=1)
-    x = self.forward_dense(x)
+    x = self.forward_dense(x, training=training)
     return x
 
   def forward(self,
@@ -100,8 +110,8 @@ class BaseDQN(nn.Module):
       x = x.unsqueeze(0)
       side_input = side_input.unsqueeze(0)
       # Remove batch dimension that was added
-      return self.forward_dqn(x, side_input).squeeze_(0)
-    return self.forward_dqn(x, side_input)
+      return self.forward_dqn(x, side_input, training=training).squeeze_(0)
+    return self.forward_dqn(x, side_input, training=training)
 
 
 class DQN(BaseDQN):
@@ -117,17 +127,11 @@ class DQN(BaseDQN):
     hidden_layers_dim.append(action_size)
 
     # Add hidden layers
-    def _create_mlp(hidden_layers_dim: list):
-      hidden_layers = nn.ModuleList()
-      for in_, out_ in zip(hidden_layers_dim[:-1], hidden_layers_dim[1:]):
-        hidden_layers.append(nn.Linear(in_, out_))
-      return hidden_layers
-
     self.hidden_layers = _create_mlp(hidden_layers_dim)
 
-    self.activation = torch.relu
+    self.activation = torch.nn.LeakyReLU()
 
-  def forward_dense(self, x: torch.Tensor) -> torch.Tensor:
+  def forward_dense(self, x: torch.Tensor, training: bool) -> torch.Tensor:
     "Forward pass for dense layers only. Expects batch dimension"
     for hidden_layer in self.hidden_layers[:-1]:
       x = self.activation(hidden_layer(x))
@@ -136,9 +140,7 @@ class DQN(BaseDQN):
 
 
 class DuelingDQN(BaseDQN):
-  """
-    Dueling DQN model from https://arxiv.org/pdf/1511.06581
-    """
+  """Dueling DQN model from https://arxiv.org/pdf/1511.06581"""
 
   def __init__(self, action_size: int, mock_observation: Observation,
                config: dict):
@@ -154,28 +156,27 @@ class DuelingDQN(BaseDQN):
     advantage_hidden_layers_dim.append(
         action_size)  # Output for advantage stream
 
-    def _create_mlp(hidden_layers_dim: list):
-      hidden_layers = nn.ModuleList()
-      for in_, out_ in zip(hidden_layers_dim[:-1], hidden_layers_dim[1:]):
-        hidden_layers.append(nn.Linear(in_, out_))
-      return hidden_layers
-
     self.value_hidden_layers = _create_mlp(value_hidden_layers_dim)
     self.advantage_hidden_layers = _create_mlp(advantage_hidden_layers_dim)
 
-    self.activation = torch.relu
+    self.activation = torch.nn.LeakyReLU()
 
-  def forward_dense(self, x: torch.Tensor) -> torch.Tensor:
+  def forward_dense(self,
+                    x: torch.Tensor,
+                    training: bool = False) -> torch.Tensor:
     "Forward pass for dense layers only. Expects batch dimension"
     value_x = x
     advantage_x = x
-    # Technically we don't need to even run the value stream if not training.
-    for layer in self.value_hidden_layers[:-1]:
-      value_x = self.activation(layer(value_x))
-    value_x = self.value_hidden_layers[-1](value_x)
 
     for layer in self.advantage_hidden_layers[:-1]:
       advantage_x = self.activation(layer(advantage_x))
     advantage_x = self.advantage_hidden_layers[-1](advantage_x)
 
-    return value_x + advantage_x - advantage_x.mean(dim=1, keepdim=True)
+    # Technically we don't need the value stream if not training.
+    if True:
+      for layer in self.value_hidden_layers[:-1]:
+        value_x = self.activation(layer(value_x))
+      value_x = self.value_hidden_layers[-1](value_x)
+      return value_x + advantage_x - advantage_x.mean(dim=1, keepdim=True)
+
+    return advantage_x - advantage_x.mean(dim=1, keepdim=True)

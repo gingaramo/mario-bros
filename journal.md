@@ -71,10 +71,44 @@ of experiences, we will introduce a bias that will need to be corrected. See det
 $$
 w_i = \left( \frac{1}{N} \cdot \frac{1}{P(i)} \right)^\beta
 $$
-where $\beta$ controls the strength of the importance-sampling correction.
+where $\beta$ controls the strength of the importance-sampling correction. Additionally the authors recommend
+normalizing the IS among the batch, or entire buffer. While it is not clear, I've normalized by the maximum weight over the entire buffer and that worked quite well on a small sample.
 
-**Prefer learning from bad experiences more than positive ones**:
+## [Dueling Network Architectures for Deep Reinforcement Learning](./papers/1511.06581v3.pdf)
+
+**Key contribution**: This paper proposes to decompose  our Q-value function into state value and advantage value function networks, sharing a common torso. This allows for more efficient and generalizable learning across the two function networks. During evaluation we only need to evaluate one sub-network (the advantage), and can expend the value estimation altogether.
+
+So, we rewrite Q-value function as:
+
+$$
+Q(s,a) = V(s) + A(s, a)
+$$
+
+Where the best action $a^*$  for a given state $s$ is:
+
+ $$a^* = \text{argmax}_{a' \in \mathcal{A}}\{Q(s,a')\}$$
+
+ $$= \text{argmax}_{a' \in \mathcal{A}}\{V(s) + A(s,a')\}$$
+
+ $$= \text{argmax}_{a' \in \mathcal{A}}\{A(s,a')\}$$
+ 
+The authors note that this particular formulation suffers from unidentifiability (i.e. adding/substracting a constant from V and A respectively) and poor practical performance.
+
+The authors propose to constrain the Q-function to have 0 advantage on the optimal action, leading to the following formulation of our network's output:
+
+$$Q(s,a)=V(s)+A(s,a)-\text{max}_{a' \in \mathcal{A}}{A(s,a')}$$
+
+Where, for
+$$\text{} a^* = \text{argmax}_{a' \in \mathcal{A}}\{A(s,a')\}$$
+We find
+$$Q(s,a^*) = V(s)$$
+
+However the authors note that the max operator suffers from instability during training and suggest the following simplified (and still identifiable) formulation:
+
+$$Q(s,a)=V(s)+A(s,a)-\frac{1}{|\mathcal{A}|}\sum_{a' \in A}{A(s,a')}$$
+
 
 ## TODO Reading
- 
+
+ * [Intrinsic curiosity module](https://arxiv.org/pdf/1705.05363) -- half-implemented by now
  * [Noisy Networks for Exploration](https://arxiv.org/abs/1706.10295)
