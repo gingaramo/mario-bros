@@ -17,6 +17,7 @@ import numpy as np
 
 from src.agent import Agent
 from src.environment import create_environment
+from src.noisy_network import replace_linear_with_noisy
 from src.recording import Recording
 from src.render import render, set_headless_mode, render_model_weights
 

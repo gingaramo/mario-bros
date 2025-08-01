@@ -9,6 +9,7 @@ import os
 from src.tb_logging import GlobalStepSummaryWriter as SummaryWriter
 from src.dqn import DQN, DuelingDQN
 from src.environment import Observation
+from src.noisy_network import replace_linear_with_noisy
 from src.state import State
 from src.replay_buffer import UniformExperienceReplayBuffer, PrioritizedExperienceReplayBuffer
 import pickle
@@ -31,10 +32,11 @@ class Agent:
 
     # Learning parameters.
     self.gamma = config['gamma']
-    self.epsilon_min = config['epsilon_min']
+    self.epsilon_min = config.get('epsilon_min', 0.05)
     self.learning_rate = config['learning_rate']
-    assert 'epsilon_exponential_decay' in config or 'epsilon_linear_decay' in config, \
-        "Either 'epsilon_exponential_decay' or 'epsilon_linear_decay' must be provided in config."
+    self.apply_noisy_network = config.get('apply_noisy_network', False)
+    assert self.apply_noisy_network or ('epsilon_exponential_decay' in config or 'epsilon_linear_decay' in config), \
+        "Either 'epsilon_exponential_decay' or 'epsilon_linear_decay' must be provided in config if not using noisy networks."
     self.epsilon_linear_decay = config.get('epsilon_linear_decay', None)
     self.epsilon_exponential_decay = config.get('epsilon_exponential_decay',
                                                 None)
@@ -58,7 +60,7 @@ class Agent:
         or not os.path.exists(self.checkpoint_state_path)):
       self.episodes_trained = 0
       self.global_step = 0
-      self.initial_epsilon = config['epsilon']
+      self.initial_epsilon = config.get('epsilon', 1.0)
     else:
       with open(self.checkpoint_state_path, "rb") as f:
         state = pickle.load(f)
@@ -117,6 +119,10 @@ class Agent:
                                 config['network']['dueling_dqn'])
         self.target_model = DuelingDQN(self.action_size, mock_observation,
                                        config['network']['dueling_dqn'])
+
+      if self.apply_noisy_network:
+        self.model = replace_linear_with_noisy(self.model)
+        self.target_model = replace_linear_with_noisy(self.target_model)
       if os.path.exists(self.checkpoint_path):
         self.model.load_state_dict(
             torch.load(self.checkpoint_path, map_location=self.device))
@@ -151,6 +157,7 @@ class Agent:
 
   @property
   def epsilon(self):
+    assert not self.apply_noisy_network, "Epsilon is only applicable when not using noisy networks."
     if self.epsilon_exponential_decay:
       eps = self.initial_epsilon * (self.epsilon_exponential_decay**
                                     self.global_step)
@@ -186,7 +193,7 @@ class Agent:
       # "Act values" are q values for most cases but for softmax.
       act_values = q_values_np
 
-    if np.random.rand() <= self.epsilon:
+    if not self.apply_noisy_network and np.random.rand() <= self.epsilon:
       action = random.randrange(self.action_size)
     else:
       if self.action_selection == 'softmax':
@@ -309,7 +316,8 @@ class Agent:
     self.summary_writer.add_scalar('Replay/Loss', loss)
     self.summary_writer.add_scalar('Replay/LearningRate',
                                    self.optimizer.param_groups[0]['lr'])
-    self.summary_writer.add_scalar('Replay/Epsilon', self.epsilon)
+    if not self.apply_noisy_network:
+      self.summary_writer.add_scalar('Replay/Epsilon', self.epsilon)
     self.summary_writer.add_scalar(
         "Replay/ParamNorm",
         torch.nn.utils.get_total_norm(self.model.parameters()))

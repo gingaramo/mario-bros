@@ -172,11 +172,7 @@ class DuelingDQN(BaseDQN):
       advantage_x = self.activation(layer(advantage_x))
     advantage_x = self.advantage_hidden_layers[-1](advantage_x)
 
-    # Technically we don't need the value stream if not training.
-    if True:
-      for layer in self.value_hidden_layers[:-1]:
-        value_x = self.activation(layer(value_x))
-      value_x = self.value_hidden_layers[-1](value_x)
-      return value_x + advantage_x - advantage_x.mean(dim=1, keepdim=True)
-
-    return advantage_x - advantage_x.mean(dim=1, keepdim=True)
+    for layer in self.value_hidden_layers[:-1]:
+      value_x = self.activation(layer(value_x))
+    value_x = self.value_hidden_layers[-1](value_x)
+    return value_x + advantage_x - advantage_x.mean(dim=1, keepdim=True)

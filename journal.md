@@ -107,8 +107,61 @@ However the authors note that the max operator suffers from instability during t
 
 $$Q(s,a)=V(s)+A(s,a)-\frac{1}{|\mathcal{A}|}\sum_{a' \in A}{A(s,a')}$$
 
+### Code snippets
+
+```python
+
+
+class DuelingDQN(nn.Module):
+  def forward_cnn(self, x):
+    # ...
+
+  def forward_dense(self, x)
+    value_x, advantage_x = x, x
+
+    for layer in self.advantage_hidden_layers[:-1]:
+      advantage_x = self.activation(layer(advantage_x))
+    advantage_x = self.advantage_hidden_layers[-1](advantage_x)
+
+    for layer in self.value_hidden_layers[:-1]:
+      value_x = self.activation(layer(value_x))
+    value_x = self.value_hidden_layers[-1](value_x)
+    
+    return value_x + advantage_x - advantage_x.mean(dim=1, keepdim=True)
+```
+
+## [Noisy Networks for Exploration](https://arxiv.org/abs/1706.10295)
+
+This paper proposes replacing exploration strategies like $\epsilon$-greddy and entropy reward (ICM) with
+injecting parametric noise into the network's weights, in particular the linear layers. This noise is learned
+alongside the weigths of the network.
+
+This turns linear layers from:
+
+$$
+y = x * w + b
+$$
+
+Into
+
+$$
+y = x * (w + \sigma_w * \epsilon) + (b + \sigma_b * \epsilon')
+$$
+
+In my cartpole experiments noise on the bias term resulted in worse overall learning, so removing it improved convergence speed to an optimal policy, but that might be problem-specific \[[episode steps screenshot](./media/images/noisy_network_with_and_without_bias.png)\].
+
+
+### Code snippets
+
+```python
+class NoisyLinear(nn.Module):
+  def forward(self, input):
+    weight = self.weight_mu + self.weight_sigma * self.weight_epsilon.normal_()
+    bias = self.bias + self.bias_sigma * self.bias_epsilon.normal_()
+    return nn.functional.linear(input, weight, bias)
+```
 
 ## TODO Reading
 
  * [Intrinsic curiosity module](https://arxiv.org/pdf/1705.05363) -- half-implemented by now
- * [Noisy Networks for Exploration](https://arxiv.org/abs/1706.10295)
+ 

@@ -50,7 +50,7 @@ class ReplayBuffer(object):
     def _to_input(
         observations: List[Tuple[torch.Tensor, torch.Tensor]]
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-      no_tensor = torch.tensor(())
+      no_tensor = torch.tensor((), device=self.device)
 
       # Check if ALL observations have frame data (must be consistent)
       frame_shapes = [obs[0].shape for obs in observations]

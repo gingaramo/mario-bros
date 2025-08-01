@@ -498,7 +498,7 @@ class TestReplayBufferEdgeCases(unittest.TestCase):
     # Add multiple observations to ensure we get mixed types when sampling
     frame_dense_obs = (torch.randn(3, 84, 84), torch.randn(4))
     frame_only_obs = (torch.randn(3, 84, 84), torch.tensor(()))
-    
+
     # Add several of each type to increase chances of sampling mixed types
     for _ in range(5):
       replay_buffer.append(frame_dense_obs, 0, 1.0, frame_dense_obs, False)
@@ -509,7 +509,8 @@ class TestReplayBufferEdgeCases(unittest.TestCase):
     error_raised = False
     for attempt in range(100):  # Try many times to get mixed sampling
       try:
-        all_obs, all_actions, all_rewards, all_next_obs, all_done = replay_buffer.sample(6)
+        all_obs, all_actions, all_rewards, all_next_obs, all_done = replay_buffer.sample(
+            6)
         # If we get here without an error, the batch happened to be homogeneous
       except ValueError as e:
         if "Mixed observation types not supported" in str(e):
@@ -517,9 +518,11 @@ class TestReplayBufferEdgeCases(unittest.TestCase):
           break
         else:
           raise  # Re-raise if it's a different ValueError
-    
+
     # Should have raised the mixed types error at least once
-    self.assertTrue(error_raised, "Expected ValueError for mixed observation types was never raised")
+    self.assertTrue(
+        error_raised,
+        "Expected ValueError for mixed observation types was never raised")
 
   def test_large_batch_sampling(self):
     """Test sampling when batch size equals buffer size."""
