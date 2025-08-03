@@ -122,70 +122,93 @@ def main(args):
     episodes = [agent.episodes_trained]
   else:
     episodes = range(agent.episodes_trained, config['env']['num_episodes'])
+  episode_timestep = 0
+  truncated, done = False, False
+  agent.episode_begin(recording=args.record_play)
+  observation, info = env.reset()
+  total_reward = 0
+
+  if args.record_play:
+    recording = Recording(f"./checkpoint/{config['agent']['name']}",
+                          f"episode_{agent.episodes_trained}")
+
   pbar = tqdm(episodes, desc="Starting")
-  for episode in pbar:
-    if args.record_play:
-      recording = Recording(f"./checkpoint/{config['agent']['name']}",
-                            f"episode_{episode}")
-    agent.episode_begin(recording=args.record_play)
-    observation, info = env.reset()
-    total_reward = 0
 
-    if config['env'].get('max_num_steps', float('inf')) < agent.global_step:
-      print(f"Maximum number of steps {config['env']['max_num_steps']}")
+  while True:
+    if agent.episodes_trained >= config['env']['num_episodes']:
+      # Stop training if we reached the maximum number of episodes
+      print("Maximum number of episodes reached.")
       break
-    for timestep in range(config['env']['max_steps_per_episode']):
-      global FRAMES_FORWARD
-      while FRAMES_FORWARD >= 0:
-        if FRAMES_FORWARD > 0:
-          FRAMES_FORWARD -= 1
-          break
-        pass
-      action, q_values = agent.act(observation)
-      next_observation, reward, done, truncated, info = env.step(action)
-      # Currently ignoring truncation.
+    if agent.global_step >= config['env'].get('num_steps', float('inf')):
+      # Stop training if we reached the maximum number of steps
+      print("Maximum number of steps reached.")
+      break
 
-      if agent.curiosity_module:
-        with torch.no_grad():
-          frame, dense = observation.as_input(device)
-          next_frame, next_dense = next_observation.as_input(device)
-          curiosity_reward = agent.curiosity_module(
-              (frame.unsqueeze(0).clone().detach().to(device),
-               dense.clone().detach().to(device)),
-              torch.tensor(action, dtype=torch.long).to(device),
-              (next_frame.unsqueeze(0).clone().detach().to(device),
-               next_dense.clone().detach().to(device)),
-              training=False)
-          reward += curiosity_reward.item()
+    # End episode if we reached the maximum steps per episode, or
+    # if done or truncated, reset the episode.
+    if episode_timestep >= config['env']['max_steps_per_episode'] or (
+        done or truncated):
+      if recording:
+        recording.save()
+        recording = None
+      episode_info = {
+          'episode': agent.episodes_trained,
+          'total_reward': total_reward,
+          'steps': episode_timestep + 1
+      }
+      agent.episode_end(episode_info)
+      pbar.set_description(
+          f"Episode: {agent.episodes_trained+1}, Total Reward: {total_reward} Steps: {episode_timestep + 1}"
+      )
+      pbar.refresh()
 
-      agent.remember(observation, action, reward, next_observation, done)
-      agent.replay()
+      # Reset the environment and prepare for the next episode
+      episode_timestep = 0
+      agent.episode_begin(recording=args.record_play)
+      observation, info = env.reset()
+      total_reward = 0
 
-      render(env,
-             q_values,
-             action,
-             action_labels,
-             recording=recording,
-             upscale_factor=config.get('render_upscale_factor', 1))
-
-      observation = next_observation
-      total_reward += reward
-      if done or truncated:
+      # If we are recording, we stop after the first episode.
+      if args.record_play:
         break
-    agent.summary_writer.flush()
 
-    if recording:
-      recording.save()
-      recording = None
-    episode_info = {
-        'episode': episode,
-        'total_reward': total_reward,
-        'steps': timestep + 1
-    }
-    agent.episode_end(episode_info)
-    pbar.set_description(
-        f"Episode: {episode+1}, Total Reward: {total_reward} Steps: {timestep + 1}"
-    )
+    # This frame-by-frame step should be rewritten.
+    global FRAMES_FORWARD
+    while FRAMES_FORWARD > 0:
+      if FRAMES_FORWARD > 0:
+        FRAMES_FORWARD -= 1
+        break
+      pass
+
+    action, q_values = agent.act(observation)
+    next_observation, reward, done, truncated, info = env.step(action)
+    episode_timestep += 1
+    if agent.curiosity_module:
+      with torch.no_grad():
+        frame, dense = observation.as_input(device)
+        next_frame, next_dense = next_observation.as_input(device)
+        curiosity_reward = agent.curiosity_module(
+            (frame.unsqueeze(0).clone().detach().to(device),
+             dense.clone().detach().to(device)),
+            torch.tensor(action, dtype=torch.long).to(device),
+            (next_frame.unsqueeze(0).clone().detach().to(device),
+             next_dense.clone().detach().to(device)),
+            training=False)
+        reward += curiosity_reward.item()
+
+    agent.remember(observation, action, reward, next_observation, done)
+    agent.replay()
+
+    render(env,
+           q_values,
+           action,
+           action_labels,
+           recording=recording,
+           upscale_factor=config.get('render_upscale_factor', 1))
+
+    observation = next_observation
+    total_reward += reward
+  agent.summary_writer.flush()
 
   env.close()
   cv2.destroyAllWindows()
