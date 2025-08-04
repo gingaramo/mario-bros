@@ -1,7 +1,6 @@
 import argparse
 import gymnasium as gym
 import gym_super_mario_bros  # Keep (environment registration)
-from nes_py.wrappers import JoypadSpace
 from pynput import keyboard
 import threading
 from gym_super_mario_bros.actions import SIMPLE_MOVEMENT
@@ -17,9 +16,8 @@ import numpy as np
 
 from src.agent import Agent
 from src.environment import create_environment
-from src.noisy_network import replace_linear_with_noisy
 from src.recording import Recording
-from src.render import render, set_headless_mode, render_model_weights
+from src.render import render, set_headless_mode, set_rendering_enabled
 
 gym.register_envs(ale_py)
 
@@ -28,11 +26,16 @@ FRAMES_FORWARD = -1
 
 def on_press(key):
   global FRAMES_FORWARD
+  global RENDERING_ENABLED
   try:
     if key.char == 'c':
       FRAMES_FORWARD = -1
     if key.char == 'n':
       FRAMES_FORWARD = 1
+    if key.char == 's':
+      set_rendering_enabled(True)
+    if key.char == 'h':
+      set_rendering_enabled(False)
   except AttributeError:
     pass
 
@@ -174,7 +177,7 @@ def main(args):
 
     # This frame-by-frame step should be rewritten.
     global FRAMES_FORWARD
-    while FRAMES_FORWARD > 0:
+    while FRAMES_FORWARD >= 0:
       if FRAMES_FORWARD > 0:
         FRAMES_FORWARD -= 1
         break

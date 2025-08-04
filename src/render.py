@@ -1,11 +1,7 @@
 import cv2
 import numpy as np
-import time
-import threading
 import torch
 import math
-
-from pynput import keyboard
 
 HEADLESS_MODE = False
 RENDERING_ENABLED = True
@@ -17,32 +13,16 @@ def set_headless_mode(value):
   HEADLESS_MODE = value
 
 
+def set_rendering_enabled(value):
+  global RENDERING_ENABLED
+  print(f"Rendering enabled: {value}")
+  RENDERING_ENABLED = value
+
+
 def should_render():
   global HEADLESS_MODE
   global RENDERING_ENABLED
   return (not HEADLESS_MODE) and RENDERING_ENABLED
-
-
-def on_press(key):
-  global RENDERING_ENABLED
-  try:
-    if key.char == 's':
-      RENDERING_ENABLED = True
-    if key.char == 'h':
-      RENDERING_ENABLED = False
-  except AttributeError:
-    pass
-
-
-def start_keyboard_listener():
-  listener = keyboard.Listener(on_press=on_press)
-  listener.start()
-  return listener
-
-
-keyboard_thread = threading.Thread(target=start_keyboard_listener)
-keyboard_thread.daemon = True
-keyboard_thread.start()
 
 
 def maybe_render_dqn(x, side_input: torch.Tensor):
