@@ -35,9 +35,11 @@ class BaseDQN(nn.Module):
       self.flattened_cnn_dim = self.initialize_cnn(mock_observation.frame,
                                                    config['convolution'])
     has_dense_input = mock_observation.dense is not None
+    # Note mock_observation.dense.shape[1] is because we run on vectorized environments,
+    # so [0] is num_envs.
     self.cnn_plus_dense_input_dim = (
         self.flattened_cnn_dim +
-        (mock_observation.dense.shape[0] if has_dense_input else 0))
+        (mock_observation.dense.shape[1] if has_dense_input else 0))
 
     self.activation = torch.nn.LeakyReLU()
 
@@ -57,7 +59,7 @@ class BaseDQN(nn.Module):
           f"Unsupported convolution type: {config['type']}. Supported: '2d', '3d'."
       )
     # Technically channels_in will either be actual channels or stacked frames.
-    channels_in = mock_frame.shape[0] if len(mock_frame.shape) == 3 else 1
+    channels_in = mock_frame.shape[1] if len(mock_frame.shape) == 4 else 1
     for (channels_out, kernel_size, stride) in zip(config['channels'],
                                                    config['kernel_sizes'],
                                                    config['strides']):
@@ -66,7 +68,8 @@ class BaseDQN(nn.Module):
       channels_in = channels_out
 
     def _get_flattened_shape(x: torch.Tensor) -> int:
-      x = x.unsqueeze(0)
+      # We keep the first environment observation only.
+      x = x[0]
       for conv in self.convolutions:
         x = conv(x)
       return x.flatten().shape[0]
@@ -103,14 +106,12 @@ class BaseDQN(nn.Module):
               training: bool = False):
     "The actual forward call for the DQN model."
     x, side_input = x
+    # Render the side input if there's a frame.
     if not training:
       if x.numel() > 0:
-        render.maybe_render_dqn(x, side_input)
+        render.maybe_render_dqn(
+            x[0], side_input[0] if side_input.numel() > 0 else torch.empty(()))
 
-      x = x.unsqueeze(0)
-      side_input = side_input.unsqueeze(0)
-      # Remove batch dimension that was added
-      return self.forward_dqn(x, side_input, training=training).squeeze_(0)
     return self.forward_dqn(x, side_input, training=training)
 
 

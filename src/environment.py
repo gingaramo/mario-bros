@@ -1,5 +1,6 @@
 import gymnasium as gym
-from typing import Tuple, Optional, List
+from gymnasium.vector.vector_env import VectorEnv
+from typing import Tuple, Optional, List, Union
 from collections import deque
 import cv2
 import torch
@@ -22,6 +23,10 @@ class Observation(object):
   and the observation is just a dense vector representing the state; or it
   could be composed of the pixel-frame with dense vector of observations.
 
+  For vectorized environments, Observations frames and dense are vectorized as
+  opposed having a List[Observation] of individual observations, for sake of
+  efficiency. For accessing individual observations, as_list() is provided.
+
   Observations are used by the environment wrappers to return
   observations in a consistent way, regardless of the underlying environment.
 
@@ -42,28 +47,6 @@ class Observation(object):
              For history frames, can be (C, N, H, W) for RGB or (N, H, W) for grayscale (Conv3D compatible).
       dense: Optional dense vector as a numpy array (N, D) or (D,).
     """
-    if frame is not None:
-      # Convert from (H,W,C) to (C,H,W) if needed
-      if len(
-          frame.shape) == 3 and frame.shape[2] <= 16 and frame.shape[2] < min(
-              frame.shape[:2]):
-        # This looks like (H,W,C) format - convert to (C,H,W)
-        frame = np.transpose(frame, (2, 0, 1))
-
-      # Validate frame format - allow various shapes for different use cases
-      if len(frame.shape) == 2:
-        # Grayscale (H, W) is fine
-        pass
-      elif len(frame.shape) == 3:
-        # Most common case: (C, H, W) or (N, H, W) for stacked frames
-        pass
-      elif len(frame.shape) == 4:
-        # For batched frames from some environments
-        pass
-      else:
-        raise ValueError(
-            f"Frame must be 2D, 3D, or 4D array. Got shape {frame.shape}")
-
     assert (frame is not None) or (dense is not None), \
         "Observation must have at least one of frame or dense vector."
 
@@ -93,8 +76,43 @@ class Observation(object):
     ]
     return tuple(converted_inputs)
 
+  def as_list(self) -> List['Observation']:
+    """
+    Converts the observation to a list of Observation objects, presumably unrolling
+    vectorized environment observations.
+    """
+    num_envs = self.frame.shape[0] if self.frame is not None else None
+    num_envs = self.dense.shape[0] if self.dense is not None else num_envs
+    return [
+        Observation(frame=self.frame[i] if self.frame is not None else None,
+                    dense=self.dense[i] if self.dense is not None else None)
+        for i in range(num_envs)
+    ]
 
-class ObservationWrapper(gym.Wrapper):
+
+def merge_observations(observations: List[Observation]) -> Observation:
+  """
+  Merges a list of Observation objects into a single Observation.
+
+  This is useful in a vectorized environment where each observation
+  corresponds to a different environment instance.
+
+  Args:
+    observations: List of Observation objects to merge.
+
+  Returns:
+    A single Observation object with merged frame and dense vector.
+  """
+  frames = [obs.frame for obs in observations if obs.frame is not None]
+  denses = [obs.dense for obs in observations if obs.dense is not None]
+
+  merged_frame = np.stack(frames, axis=0) if frames else None
+  merged_dense = np.stack(denses, axis=0) if denses else None
+
+  return Observation(frame=merged_frame, dense=merged_dense)
+
+
+class ObservationWrapper(gym.vector.VectorWrapper):
   """
   A wrapper that returns an Observation object from the environment's step and reset methods.
 
@@ -106,11 +124,11 @@ class ObservationWrapper(gym.Wrapper):
 
   config options:
     - input: str; "frame" (default) or "dense"
-      - "frame": Treats environment output as pixel frames
-      - "dense": Treats environment output as dense vectors
+      - "frame": Treats environment observations as pixels of a frame
+      - "dense": Treats environment observations as a dense vector
   """
 
-  def __init__(self, env: gym.Env, config: dict) -> None:
+  def __init__(self, env: VectorEnv, config: dict) -> None:
     super().__init__(env)
     self.input_type = config.get('input', 'frame')
     if self.input_type not in ['frame', 'dense']:
@@ -145,7 +163,7 @@ class ObservationWrapper(gym.Wrapper):
     return self.to_observation(obs), info
 
 
-class PreprocessFrameEnv(gym.Wrapper):
+class PreprocessFrameEnv(gym.vector.VectorWrapper):
   """
   Postprocesses Observation 'frame' with common transformations.
   
@@ -159,7 +177,7 @@ class PreprocessFrameEnv(gym.Wrapper):
   grayscale: bool
   normalize: bool
 
-  def __init__(self, env: gym.Env, config: dict) -> None:
+  def __init__(self, env: VectorEnv, config: dict) -> None:
     super().__init__(env)
     self.resize_shape = config.get('resize_shape', None)
     self.grayscale = bool(config.get('grayscale', False))
@@ -170,40 +188,41 @@ class PreprocessFrameEnv(gym.Wrapper):
       raise ValueError("Input frame must be a numpy ndarray.")
 
     # Convert from (C,H,W) to (H,W,C) for OpenCV processing if needed
-    if len(frame.shape) == 3 and frame.shape[0] <= 4:
-      frame = frame.transpose(1, 2, 0)
-
     if self.resize_shape:
       assert len(self.resize_shape) == 2
       frame = cv2.resize(frame,
                          self.resize_shape,
                          interpolation=cv2.INTER_AREA)
     if self.grayscale:
-      if len(frame.shape) == 3:
-        frame = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
+      assert len(
+          frame.shape) == 3, "3 dimensions (C,H,W) needed for grayscale."
+      frame = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
+    else:
+      # Not hard to add, but won't do it now.
+      raise NotImplementedError("Only grayscale images are supported.")
+
     if self.normalize:
       frame = frame.astype(np.float32) / 255.0
-
-    # Convert back to (C,H,W) format if RGB, keep (H,W) for grayscale
-    if len(frame.shape) == 3:
-      frame = frame.transpose(2, 0, 1)
-
     return frame
 
   def step(self, action: int) -> Tuple[Observation, float, bool, bool, dict]:
     obs, reward, terminated, truncated, info = self.env.step(action)
     assert obs.frame is not None
-    return Observation(frame=self.preprocess(obs.frame),
+    processed_frame = np.stack(
+        [self.preprocess(obs.frame[i]) for i in range(self.env.num_envs)])
+    return Observation(frame=processed_frame,
                        dense=obs.dense), reward, terminated, truncated, info
 
   def reset(self, **kwargs) -> Tuple[Observation, dict]:
     obs, info = self.env.reset(**kwargs)
 
     assert obs.frame is not None
-    return Observation(frame=self.preprocess(obs.frame), dense=obs.dense), info
+    processed_frame = np.stack(
+        [self.preprocess(obs.frame[i]) for i in range(self.env.num_envs)])
+    return Observation(frame=processed_frame, dense=obs.dense), info
 
 
-class RepeatActionEnv(gym.Wrapper):
+class RepeatActionEnv(gym.vector.VectorWrapper):
   """
   Repeats the action given to step() as many times as configured.
   Returns early if 'truncated' or 'done'. 
@@ -215,11 +234,18 @@ class RepeatActionEnv(gym.Wrapper):
 
   num_repeat_action: int
 
-  def __init__(self, env: gym.Env, config: dict) -> None:
+  def __init__(self, env: VectorEnv, config: dict) -> None:
     super().__init__(env)
     self.num_repeat_action = config.get('num_repeat_action', 1)
     if self.num_repeat_action < 1:
       raise ValueError("num_repeat_action must be >= 1")
+    if isinstance(self.env, VectorEnv):
+      # TODO:
+      # RepeatActionEnv does not support vectorized environments yet, because
+      # environments get auto-reset after done or truncated, so I need to
+      # remember which ones did get reset and hard-reset before returning them.
+      raise ValueError(
+          "RepeatActionEnv does not support vectorized environments (yet).")
 
   def step(self, action: int) -> Tuple[Observation, float, bool, bool, dict]:
     total_reward = 0.0
@@ -238,7 +264,7 @@ class RepeatActionEnv(gym.Wrapper):
     return obs, info
 
 
-class ReturnActionEnv(gym.Wrapper):
+class ReturnActionEnv(gym.vector.VectorWrapper):
   """
   Appends the current action to the observation's dense vector.
 
@@ -251,24 +277,27 @@ class ReturnActionEnv(gym.Wrapper):
       - "append": Appends the current action as a dense parameter to the observation
   """
 
-  def __init__(self, env: gym.Env, config: dict = None) -> None:
+  def __init__(self, env: VectorEnv, config: dict = None) -> None:
     super().__init__(env)
     config = config or {}
     self.mode = config.get('mode', 'append')
     if self.mode not in ['append']:
       raise ValueError(f"Invalid mode '{self.mode}'. Must be 'append'")
 
-  def step(self, action: int) -> Tuple[Observation, float, bool, bool, dict]:
+  def step(self,
+           action: List[int]) -> Tuple[Observation, float, bool, bool, dict]:
     obs, reward, terminated, truncated, info = self.env.step(action)
 
     if self.mode == 'append':
+      num_envs = self.env.num_envs
+      action = np.array(action).reshape(num_envs, -1)
       # Create new observation with dense vector containing current action
       if obs.dense is not None:
         # Append current action to existing dense vector
-        new_dense = np.concatenate((obs.dense, np.array([action])))
+        new_dense = np.concatenate((obs.dense, action), axis=1)
       else:
         # Create dense vector with just current action
-        new_dense = np.array([action])
+        new_dense = action
       return Observation(frame=obs.frame,
                          dense=new_dense), reward, terminated, truncated, info
 
@@ -276,17 +305,19 @@ class ReturnActionEnv(gym.Wrapper):
     obs, info = self.env.reset(**kwargs)
 
     if self.mode == 'append':
+      num_envs = self.env.num_envs
+      action = np.zeros((num_envs, 1))
       # Create new observation with dense vector containing 0 (no previous action yet)
       if obs.dense is not None:
         # Append 0 to existing dense vector to represent no previous action
-        new_dense = np.concatenate([obs.dense, np.array([0])])
+        new_dense = np.concatenate([obs.dense, action], axis=1)
       else:
         # Create dense vector with just 0 for no previous action
-        new_dense = np.array([0])
+        new_dense = action
       return Observation(frame=obs.frame, dense=new_dense), info
 
 
-class HistoryEnv(gym.Wrapper):
+class HistoryEnv(gym.vector.VectorWrapper):
   """
   Maintains a history of the last N frames.
   config options:
@@ -294,25 +325,27 @@ class HistoryEnv(gym.Wrapper):
   """
 
   history_length: int
-  states: deque
 
-  def __init__(self, env: gym.Env, config: dict) -> None:
+  def __init__(self, env: VectorEnv, config: dict) -> None:
     super().__init__(env)
     self.history_length = int(config.get('history_length', 1))
     if self.history_length < 1:
       raise ValueError("history_length must be >= 1")
-    self.states = deque(maxlen=self.history_length)
+    self.states = [
+        deque(maxlen=self.history_length) for _ in range(self.env.num_envs)
+    ]
 
-  def _get_history(self) -> Observation:
-    frames = list(self.states)
-    if len(frames) == 0:
+  def _get_single_env_history(self, history: deque) -> Observation:
+    history = list(history)
+    if len(history) == 0:
       raise RuntimeError("No frames in history.")
 
     # Extract frames and dense vectors separately
     frame_history = []
     dense_history = []
 
-    for obs in frames:
+    # First collect last n observations from this environment's state
+    for obs in history:
       if obs.frame is not None:
         frame_history.append(obs.frame)
       if obs.dense is not None:
@@ -326,17 +359,12 @@ class HistoryEnv(gym.Wrapper):
         pad_frames = [first_frame for _ in range(num_missing)]
         frame_history = pad_frames + frame_history
 
-      # Stack frames for Conv3D compatibility
-      if len(frame_history[0].shape) == 3:
-        # RGB frames: (C, H, W) -> stack to get (C, N, H, W) for Conv3D
-        stacked_frames = np.stack(frame_history, axis=1)
-      else:
-        # Grayscale frames: (H, W) -> stack to get (N, H, W) for Conv3D
-        stacked_frames = np.stack(frame_history, axis=0)
+      # Grayscale frames: (H, W) -> stack to get (N, H, W)
+      stacked_frames = np.stack(frame_history, axis=0)
     else:
       stacked_frames = None
 
-    # Handle dense vectors - stack them as history too
+    # Dense vectors however are flattened
     if dense_history:
       num_missing = self.history_length - len(dense_history)
       if num_missing > 0:
@@ -349,20 +377,39 @@ class HistoryEnv(gym.Wrapper):
 
     return Observation(frame=stacked_frames, dense=flattened_dense)
 
+  def _get_history(self) -> Observation:
+    env_observations = []
+    for i in range(self.env.unwrapped.num_envs):
+      env_observations.append(self._get_single_env_history(self.states[i]))
+    return merge_observations(env_observations)
+
   def step(self, action: int) -> Tuple[Observation, float, bool, bool, dict]:
     obs, reward, terminated, truncated, info = self.env.step(action)
-    self.states.append(obs)
-    return self._get_history(), reward, terminated, truncated, info
+
+    for states, _obs in zip(self.states, obs.as_list()):
+      states.append(_obs)
+    ret_obs = self._get_history()
+
+    # If vectorized, we need to handle the last terminated or truncated states.
+    if np.any(terminated) or np.any(truncated):
+      for i, terminated_or_truncated in enumerate(
+          np.logical_or(terminated, truncated)):
+        if terminated_or_truncated:
+          self.states[i].clear()
+    return ret_obs, reward, terminated, truncated, info
 
   def reset(self, **kwargs) -> Tuple[Observation, dict]:
-    self.states.clear()
     obs, info = self.env.reset(**kwargs)
+    self.states = [
+        deque(maxlen=self.history_length) for _ in range(self.env.num_envs)
+    ]
+    for states, _obs in zip(self.states, obs.as_list()):
+      states.append(_obs)
 
-    self.states.append(obs)
     return self._get_history(), info
 
 
-class CaptureRenderFrameEnv(gym.Wrapper):
+class CaptureRenderFrameEnv(gym.vector.VectorWrapper):
   """
   Captures the rendered frame from the environment after each step.
 
@@ -377,7 +424,7 @@ class CaptureRenderFrameEnv(gym.Wrapper):
       - "append": Appends rendered frame to the original observation (not implemented)
   """
 
-  def __init__(self, env: gym.Env, config: dict = None) -> None:
+  def __init__(self, env: VectorEnv, config: dict = None) -> None:
     super().__init__(env)
     self.rendered_frame: Optional[np.ndarray] = None
     config = config or {}
@@ -388,21 +435,26 @@ class CaptureRenderFrameEnv(gym.Wrapper):
 
   def step(self, action: int) -> Tuple[Observation, float, bool, bool, dict]:
     obs, reward, terminated, truncated, info = self.env.step(action)
-    self.rendered_frame = self.env.render()
-    assert self.rendered_frame is not None
 
+    if isinstance(self.env, VectorEnv):
+      self.rendered_frame = np.array([
+          self.env.unwrapped.envs[i].render() for i in range(self.env.num_envs)
+      ])
+    else:
+      self.rendered_frame = self.env.render()
+
+    if self.mode == 'capture':
+      return obs, reward, terminated, truncated, info
     if self.mode == 'replace':
       return Observation(frame=self.rendered_frame,
                          dense=None), reward, terminated, truncated, info
-    assert self.mode == 'capture'
-    return obs, reward, terminated, truncated, info
 
   def reset(self, **kwargs) -> Tuple[Observation, dict]:
     obs, info = self.env.reset(**kwargs)
 
-    self.rendered_frame = self.env.render()
-    assert self.rendered_frame is not None
-
+    self.rendered_frame = np.array([
+        self.env.unwrapped.envs[i].render() for i in range(self.env.num_envs)
+    ])
     if self.mode == 'replace':
       # For replace mode, we need to render the initial frame
       return Observation(frame=self.rendered_frame, dense=None), info
@@ -417,7 +469,14 @@ def create_environment(config: dict) -> gym.Env:
   Returns:
     A Gym environment instance with the specified wrappers applied.
   """
-  env = gym.make(config['env_name'], render_mode='rgb_array')
+  num_envs = config.get('num_envs', 1)
+  print(
+      f"Creating environment: {config['env_name']} with {num_envs} environments."
+  )
+  env = gym.make_vec(config['env_name'],
+                     num_envs=num_envs,
+                     vectorization_mode="sync",
+                     render_mode='rgb_array')
 
   # Seed the environment if configured
   if 'seed' in config:

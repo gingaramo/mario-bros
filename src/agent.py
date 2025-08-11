@@ -19,7 +19,9 @@ from torch.optim import lr_scheduler
 class Agent:
 
   def __init__(self, env, device, config):
-    self.action_size = env.action_space.n
+    # For now this works for vectorized environments that have only one action dimension.
+    self.action_size = env.action_space.nvec[-1]
+    self.num_envs = env.unwrapped.num_envs
     self.device = device
     self.config = config
 
@@ -28,6 +30,8 @@ class Agent:
     self.batch_size = config['batch_size']
     self.replays_until_target_update = config.get(
         'replays_until_target_update', 0)
+    self.replays_until_checkpoint = config.get('checkpoint_every_n_replays',
+                                               100)
     self.target_updates_counter = 0
 
     # Learning parameters.
@@ -91,7 +95,7 @@ class Agent:
           lambda *args, **kwargs: self.compute_target(*args, **kwargs),
           lambda *args, **kwargs: self.compute_prediction(*args, **kwargs))
       print(
-          f"Using prioritized replay buffer with size {replay_buffer_config['size']}"
+          f"Using prioritized replay buffer with size {replay_buffer_config['size']}, config: {replay_buffer_config}"
       )
     else:
       raise ValueError(
@@ -104,8 +108,6 @@ class Agent:
         'action_selection_temperature', 1.0)
     # Action repeat settings
     self.step = 0
-    # Episode being recorded? Helps avoid state updates and checkpoints
-    self.recording = False
 
     if 'dqn' in config['network'] or 'dueling_dqn' in config['network']:
       mock_observation, _ = env.reset()
@@ -170,10 +172,18 @@ class Agent:
                next_observation: Observation, done: bool):
     """Stores experience. State gathered from last state sent to act().
     """
-    self.replay_buffer.append(observation.as_input(torch.device('cpu')),
-                              action, reward,
-                              next_observation.as_input(torch.device('cpu')),
-                              done)
+    # Since observations come from multiple environments, we need to
+    # convert them to individual observations for the replay buffer.
+    observation = [
+        obs.as_input(torch.device('cpu')) for obs in observation.as_list()
+    ]
+    next_observation = [
+        obs.as_input(torch.device('cpu'))
+        for obs in next_observation.as_list()
+    ]
+    for obs, act, rew, next_obs, done in zip(observation, action, reward,
+                                             next_observation, done):
+      self.replay_buffer.append(obs, act, rew, next_obs, done)
 
   def act(self, observation: Observation) -> tuple[int, np.ndarray]:
     """Returns the action to take based on the current observation.
@@ -182,10 +192,9 @@ class Agent:
       action: The action to take, either random or based on the model's prediction.
       act_values: The Q-values predicted by the model for the current observation.
     """
-    if not self.recording:
-      # We only update global step when we're training, not recording.
-      self.global_step += 1
-      self.summary_writer.set_global_step(self.global_step)
+    # We only update global step when we're training, not recording.
+    self.global_step += self.num_envs
+    self.summary_writer.set_global_step(self.global_step)
 
     with torch.no_grad():
       q_values = self.model(observation.as_input(self.device))
@@ -193,24 +202,19 @@ class Agent:
       # "Act values" are q values for most cases but for softmax.
       act_values = q_values_np
 
-    if not self.apply_noisy_network and np.random.rand() <= self.epsilon:
-      action = random.randrange(self.action_size)
+    assert self.action_selection in [
+        'max'
+    ], f"Unsupported action selection method {self.action_selection}. Supported: 'max'."
+    if self.apply_noisy_network:
+      action = np.argmax(q_values_np, axis=1)
     else:
-      if self.action_selection == 'softmax':
-        # Softmax sampling with temperature
-        q = q_values_np / self.action_selection_temperature
-        exp_q = np.exp(q - np.max(q))
-        probs = exp_q / np.sum(exp_q)
-        action = np.random.choice(self.action_size, p=probs)
-        act_values = probs
-      elif self.action_selection == 'max':
-        # Greedy action selection
-        action = torch.argmax(q_values).item()
-      else:
-        raise ValueError(
-            f"Unsupported action selection method: {self.action_selection}. Supported: 'softmax', 'max'."
-        )
-    return action, act_values
+      action = np.zeros(self.num_envs)
+      random_action_idx = np.random.rand(self.num_envs) < self.epsilon
+      action[random_action_idx] = np.random.randint(
+          low=0, high=self.action_size, size=self.num_envs)[random_action_idx]
+      action[~random_action_idx] = np.argmax(q_values_np,
+                                             axis=1)[~random_action_idx]
+    return action.astype(int), act_values
 
   def clip_gradients(self):
     if 'clip_gradients' in self.config:
@@ -246,8 +250,6 @@ class Agent:
     return torch.gather(q_values, 1, all_action.view(-1, 1)).squeeze(1)
 
   def replay(self):
-    if self.recording:
-      return
     if len(self.replay_buffer) < max(self.batch_size,
                                      self.config['min_memory_size']):
       return
@@ -310,8 +312,15 @@ class Agent:
         target_param.data.copy_(tau * local_param.data +
                                 (1.0 - tau) * target_param.data)
 
-    if self.lr_scheduler:
-      self.lr_scheduler.step()
+    # Checkpoint every `checkpoint_every_n_replays` replays
+    self.replays_until_checkpoint -= 1
+    if self.replays_until_checkpoint % self.config.get(
+        'checkpoint_every_n_replays', 100) == 0:
+      self.save_checkpoint()
+      self.replays_until_checkpoint = self.config.get(
+          'checkpoint_every_n_replays', 100)
+
+    self.lr_scheduler.step() if self.lr_scheduler else None
 
     self.summary_writer.add_scalar('Replay/Loss', loss)
     self.summary_writer.add_scalar('Replay/LearningRate',
@@ -328,20 +337,17 @@ class Agent:
         min(pre_clip_grad_norm, self.config['clip_gradients']) *
         self.optimizer.param_groups[0]['lr'])
 
-  def episode_begin(self, recording=False):
-    self.recording = recording
-
   def episode_end(self, episode_info):
-    if self.recording:
-      return
     # Episode statistics
-    self.summary_writer.add_scalar("Episode/Episode", episode_info['episode'])
+    self.summary_writer.add_scalar("Episode/Episode", self.episodes_trained)
     self.summary_writer.add_scalar("Episode/Reward",
                                    episode_info['total_reward'])
     self.summary_writer.add_scalar("Episode/Steps", episode_info['steps'])
 
     # Checkpoint
     self.episodes_trained += 1
+
+  def save_checkpoint(self):
     torch.save(self.model.state_dict(), self.checkpoint_path)
     with open(self.checkpoint_state_path, "wb") as f:
       pickle.dump(

@@ -142,6 +142,9 @@ def render(env, q_values, action, labels, upscale_factor=1, recording=None):
         raise ValueError("Environment does not have a rendered frame.")
 
     frame = find_rendered_frame(env)
+    # Take the first environment's data, for now. Might be good to render all.
+    frame, q_values, action = frame[0], q_values[0], action[0]
+    # Render the frame with Q-values and action labels
     frame = frame_with_q_values(frame, q_values, action, labels,
                                 upscale_factor)
   if recording:
