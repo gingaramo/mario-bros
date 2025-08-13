@@ -42,6 +42,5 @@ class NoisyLinear(nn.Module):
 
   def forward(self, input):
     weight = self.weight_mu + self.weight_sigma * self.weight_epsilon.normal_()
-    # Empirically bias noise is unhelpful, so we don't use it.
-    # bias = self.bias + self.bias_sigma * self.bias_epsilon.normal_()
-    return nn.functional.linear(input, weight, self.bias)
+    bias = self.bias + self.bias_sigma * self.bias_epsilon.normal_()
+    return nn.functional.linear(input, weight, bias)

@@ -133,6 +133,27 @@ class ReplayBuffer(object):
         "This method should be implemented by subclasses of ReplayBuffer.")
 
 
+class OrderedExperienceReplayBuffer(ReplayBuffer):
+  """A simple replay buffer that samples experiences in the order they were added."""
+
+  def sample(self, batch_size):
+    if len(self) < batch_size:
+      raise ValueError(
+          f"Cannot sample {batch_size} from buffer of size {len(self)}")
+
+    minibatch = list(self.buffer)[:batch_size]
+
+    all_observation, all_action, all_reward, all_next_observation, all_done = zip(
+        *minibatch)
+
+    all_observation, all_action, all_reward, all_next_observation, all_done = self.from_list_to_tensors(
+        all_observation, all_action, all_reward, all_next_observation,
+        all_done)
+
+    return (all_observation, all_action, all_reward, all_next_observation,
+            all_done)
+
+
 class UniformExperienceReplayBuffer(ReplayBuffer):
   """A simple replay buffer that samples uniformly from the buffer."""
 

@@ -9,9 +9,9 @@ import os
 from src.tb_logging import GlobalStepSummaryWriter as SummaryWriter
 from src.dqn import DQN, DuelingDQN
 from src.environment import Observation
-from src.noisy_network import replace_linear_with_noisy
+from src.noisy_network import replace_linear_with_noisy, NoisyLinear
 from src.state import State
-from src.replay_buffer import UniformExperienceReplayBuffer, PrioritizedExperienceReplayBuffer
+from src.replay_buffer import UniformExperienceReplayBuffer, PrioritizedExperienceReplayBuffer, OrderedExperienceReplayBuffer
 import pickle
 from torch.optim import lr_scheduler
 
@@ -96,6 +96,12 @@ class Agent:
           lambda *args, **kwargs: self.compute_prediction(*args, **kwargs))
       print(
           f"Using prioritized replay buffer with size {replay_buffer_config['size']}, config: {replay_buffer_config}"
+      )
+    elif replay_buffer_config['type'] == 'ordered':
+      self.replay_buffer = OrderedExperienceReplayBuffer(
+          replay_buffer_config, device, self.summary_writer)
+      print(
+          f"Using ordered replay buffer with size {replay_buffer_config['size']}"
       )
     else:
       raise ValueError(
@@ -207,6 +213,22 @@ class Agent:
     ], f"Unsupported action selection method {self.action_selection}. Supported: 'max'."
     if self.apply_noisy_network:
       action = np.argmax(q_values_np, axis=1)
+
+      def get_noisy_network_weights_norm():
+        weight_mu_norm = []
+        weight_mu_sigma_norm = []
+        for name, module in self.model.named_modules():
+          if isinstance(module, NoisyLinear):
+            weight_mu_norm.append(torch.norm(module.weight_mu).item())
+            weight_mu_sigma_norm.append(torch.norm(module.weight_sigma).item())
+        return np.array(weight_mu_norm).mean(), np.array(
+            weight_mu_sigma_norm).mean().item()
+
+      weight_mu_norm, weight_mu_sigma_norm = get_noisy_network_weights_norm()
+      self.summary_writer.add_scalar("Action/NoisyNetworkWeightMuNorm",
+                                     weight_mu_norm)
+      self.summary_writer.add_scalar("Action/NoisyNetworkWeightSigmaNorm",
+                                     weight_mu_sigma_norm)
     else:
       action = np.zeros(self.num_envs)
       random_action_idx = np.random.rand(self.num_envs) < self.epsilon
@@ -214,6 +236,8 @@ class Agent:
           low=0, high=self.action_size, size=self.num_envs)[random_action_idx]
       action[~random_action_idx] = np.argmax(q_values_np,
                                              axis=1)[~random_action_idx]
+
+      self.summary_writer.add_scalar("Action/Epsilon", self.epsilon)
     return action.astype(int), act_values
 
   def clip_gradients(self):
