@@ -17,7 +17,7 @@ import numpy as np
 from src.agent import Agent
 from src.environment import create_environment
 from src.recording import Recording
-from src.render import render, set_headless_mode, set_rendering_enabled
+from src.render import render, set_headless_mode, set_rendering_enabled, is_headless_mode
 
 gym.register_envs(ale_py)
 
@@ -175,12 +175,13 @@ def main(args):
           return
 
     # This frame-by-frame step should be rewritten...
-    global FRAMES_FORWARD
-    while FRAMES_FORWARD >= 0:
-      if FRAMES_FORWARD > 0:
-        FRAMES_FORWARD -= 1
-        break
-      pass
+    if not is_headless_mode():
+      global FRAMES_FORWARD
+      while FRAMES_FORWARD >= 0:
+        if FRAMES_FORWARD > 0:
+          FRAMES_FORWARD -= 1
+          break
+        pass
 
     # Actual RL stuff.
     action, q_values = agent.act(observation)
@@ -209,7 +210,8 @@ def main(args):
            action,
            action_labels,
            recording=recording,
-           upscale_factor=config.get('render_upscale_factor', 1))
+           upscale_factor=config.get('render_upscale_factor', 1),
+           layout=config.get('render_layout', None))
 
     observation = next_observation
     total_reward += reward

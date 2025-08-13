@@ -13,6 +13,11 @@ def set_headless_mode(value):
   HEADLESS_MODE = value
 
 
+def is_headless_mode():
+  global HEADLESS_MODE
+  return HEADLESS_MODE
+
+
 def set_rendering_enabled(value):
   global RENDERING_ENABLED
   print(f"Rendering enabled: {value}")
@@ -23,6 +28,41 @@ def should_render():
   global HEADLESS_MODE
   global RENDERING_ENABLED
   return (not HEADLESS_MODE) and RENDERING_ENABLED
+
+
+def tile_frames_in_grid(frames, n, m):
+  """
+  Tile frames in an n x m grid pattern.
+
+  Args:
+    frames: List of frames (numpy arrays) to tile
+    
+  Returns:
+    numpy array: Combined frame with all frames tiled in a grid
+  """
+  if len(frames) == 0:
+    # If no frames, return empty image
+    return np.zeros((100, 100, 3), dtype=np.uint8)
+
+  # Get dimensions of a single frame
+  frame_height, frame_width = frames[0].shape[:2]
+
+  # Create empty grid image
+  grid_height = n * frame_height
+  grid_width = m * frame_width
+  final_frame = np.zeros((grid_height, grid_width, 3), dtype=frames[0].dtype)
+
+  # Place each frame in the grid
+  for i, frame in enumerate(frames):
+    row = i // m
+    col = i % m
+    y_start = row * frame_height
+    y_end = y_start + frame_height
+    x_start = col * frame_width
+    x_end = x_start + frame_width
+    final_frame[y_start:y_end, x_start:x_end] = frame
+
+  return final_frame
 
 
 def maybe_render_dqn(x, side_input: torch.Tensor):
@@ -130,7 +170,13 @@ def frame_with_q_values(next_state, q_values, action, labels, upscale_factor):
   return frame_with_q
 
 
-def render(env, q_values, action, labels, upscale_factor=1, recording=None):
+def render(env,
+           q_values,
+           action,
+           labels,
+           upscale_factor=1,
+           recording=None,
+           layout=None):
   if should_render() or recording:
 
     def find_rendered_frame(env):
@@ -143,14 +189,24 @@ def render(env, q_values, action, labels, upscale_factor=1, recording=None):
 
     frame = find_rendered_frame(env)
     # Take the first environment's data, for now. Might be good to render all.
-    frame, q_values, action = frame[0], q_values[0], action[0]
-    # Render the frame with Q-values and action labels
-    frame = frame_with_q_values(frame, q_values, action, labels,
-                                upscale_factor)
-  if recording:
-    recording.add_frame(frame)
+
+    frames = []
+    for frame, q_values, action in zip(frame, q_values, action):
+      # Render the frame with Q-values and action labels
+      frame = frame_with_q_values(frame, q_values, action, labels,
+                                  upscale_factor)
+      frames.append(frame)
+
+    if recording:
+      recording.add_frame(frame[0])
+
   if should_render():
-    cv2.imshow("Frame with Q-values", frame)
+    if layout is None:
+      # Render square by default.
+      layout = (int(math.ceil(q_values.shape[0]**0.5)),
+                int(math.ceil(q_values.shape[0]**0.5)))
+    final_frame = tile_frames_in_grid(frames, layout[0], layout[1])
+    cv2.imshow("Frame with Q-values", final_frame)
     cv2.waitKey(1)
 
 
