@@ -1,5 +1,6 @@
 import gymnasium as gym
 from gymnasium.vector.vector_env import VectorEnv
+from gymnasium.vector import SyncVectorEnv
 from typing import Tuple, Optional, List, Union
 from collections import deque
 import cv2
@@ -422,6 +423,8 @@ class CaptureRenderFrameEnv(gym.vector.VectorWrapper):
       - "capture": Only captures frame, returns original observation
       - "replace": Returns rendered frame as the observation, ignores original observation
       - "append": Appends rendered frame to the original observation (not implemented)
+    - observation_is_frame: bool ; if True, the observation is expected to be a frame,
+      otherwise we call render() on the environment.
   """
 
   def __init__(self, env: VectorEnv, config: dict = None) -> None:
@@ -429,6 +432,7 @@ class CaptureRenderFrameEnv(gym.vector.VectorWrapper):
     self.rendered_frame: Optional[np.ndarray] = None
     config = config or {}
     self.mode = config.get('mode', 'capture')
+    self.observation_is_frame = config.get('observation_is_frame', False)
     if self.mode not in ['capture', 'replace']:
       raise ValueError(
           f"Invalid mode '{self.mode}'. Must be 'capture' or 'replace'")
@@ -436,12 +440,12 @@ class CaptureRenderFrameEnv(gym.vector.VectorWrapper):
   def step(self, action: int) -> Tuple[Observation, float, bool, bool, dict]:
     obs, reward, terminated, truncated, info = self.env.step(action)
 
-    if isinstance(self.env, VectorEnv):
+    if not self.observation_is_frame:
       self.rendered_frame = np.array([
           self.env.unwrapped.envs[i].render() for i in range(self.env.num_envs)
       ])
     else:
-      self.rendered_frame = self.env.render()
+      self.rendered_frame = obs.frame
 
     if self.mode == 'capture':
       return obs, reward, terminated, truncated, info
@@ -451,10 +455,12 @@ class CaptureRenderFrameEnv(gym.vector.VectorWrapper):
 
   def reset(self, **kwargs) -> Tuple[Observation, dict]:
     obs, info = self.env.reset(**kwargs)
-
-    self.rendered_frame = np.array([
-        self.env.unwrapped.envs[i].render() for i in range(self.env.num_envs)
-    ])
+    if not self.observation_is_frame:
+      self.rendered_frame = np.array([
+          self.env.unwrapped.envs[i].render() for i in range(self.env.num_envs)
+      ])
+    else:
+      self.rendered_frame = obs.frame
     if self.mode == 'replace':
       # For replace mode, we need to render the initial frame
       return Observation(frame=self.rendered_frame, dense=None), info
@@ -473,10 +479,24 @@ def create_environment(config: dict) -> gym.Env:
   print(
       f"Creating environment: {config['env_name']} with {num_envs} environments."
   )
-  env = gym.make_vec(config['env_name'],
-                     num_envs=num_envs,
-                     vectorization_mode="sync",
-                     render_mode='rgb_array')
+
+  # Mario environment needs JoypadSpace which is not vectoriez, so we need to
+  # create a SyncVectorEnv.
+  if 'SuperMarioBros' not in config['env_name']:
+    env = gym.make_vec(config['env_name'],
+                       num_envs=num_envs,
+                       vectorization_mode="sync",
+                       render_mode="rgb_array")
+  else:
+    # Super Mario Bros environment is not compatible with vectorized environments.
+    def _create_mario_env():
+      mario_env = gym.make(config['env_name'])
+      from nes_py.wrappers import JoypadSpace
+      from gym_super_mario_bros.actions import SIMPLE_MOVEMENT
+      mario_env = JoypadSpace(mario_env, SIMPLE_MOVEMENT)
+      return mario_env
+
+    env = SyncVectorEnv([lambda: _create_mario_env() for _ in range(num_envs)])
 
   # Seed the environment if configured
   if 'seed' in config:
@@ -497,10 +517,6 @@ def create_environment(config: dict) -> gym.Env:
       env = HistoryEnv(env, config.get('HistoryEnv', {}))
     elif wrapper == 'CaptureRenderFrameEnv':
       env = CaptureRenderFrameEnv(env, config.get('CaptureRenderFrameEnv', {}))
-    elif wrapper == 'JoypadSpaceEnv':
-      from gym_super_mario_bros.wrappers import JoypadSpace
-      from gym_super_mario_bros.actions import SIMPLE_MOVEMENT
-      env = JoypadSpace(env, SIMPLE_MOVEMENT)
     else:
       raise ValueError(f"Unknown environment wrapper: {wrapper}")
   return env

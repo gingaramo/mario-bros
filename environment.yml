@@ -13,7 +13,7 @@ dependencies:
     - pandas==2.2.3
     - pynput
     - gymnasium[classic-control]
-    - ale-py
+    - gymnasium[box2d]
     # Use 'editable' install option
     - -e git+https://github.com/Kautenja/nes-py.git@refs/pull/94/head#egg=nes-py
     - -e git+https://github.com/Kautenja/gym-super-mario-bros.git@refs/pull/127/head#egg=gym-super-mario-bros
@@ -23,3 +23,4 @@ dependencies:
     - torch==2.6.0; sys_platform != "linux" and sys_platform != "win32"
     - torch==2.6.0+cpu; sys_platform == "linux" or sys_platform == "win32"
     - torchinfo
+    - swig

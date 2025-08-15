@@ -85,8 +85,11 @@ def clear_checkpoints_dir(config):
 def init_checkpoints_dir(config):
   os.makedirs(f"./checkpoint/{config['agent']['name']}", exist_ok=True)
   # We override the config file in the checkpoint directory.
-  shutil.copy(args.config,
-              f"./checkpoint/{config['agent']['name']}/config.yaml")
+  try:
+    shutil.copy(args.config,
+                f"./checkpoint/{config['agent']['name']}/config.yaml")
+  except shutil.SameFileError as e:
+    pass
 
 
 def main(args):

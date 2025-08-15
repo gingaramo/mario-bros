@@ -165,7 +165,6 @@ class Agent:
 
   @property
   def epsilon(self):
-    assert not self.apply_noisy_network, "Epsilon is only applicable when not using noisy networks."
     if self.epsilon_exponential_decay:
       eps = self.initial_epsilon * (self.epsilon_exponential_decay**
                                     self.global_step)
@@ -202,42 +201,53 @@ class Agent:
     self.global_step += self.num_envs
     self.summary_writer.set_global_step(self.global_step)
 
-    with torch.no_grad():
-      q_values = self.model(observation.as_input(self.device))
-      q_values_np = q_values.cpu().detach().numpy()
-      # "Act values" are q values for most cases but for softmax.
-      act_values = q_values_np
-
     assert self.action_selection in [
-        'max'
-    ], f"Unsupported action selection method {self.action_selection}. Supported: 'max'."
-    if self.apply_noisy_network:
-      action = np.argmax(q_values_np, axis=1)
+        'max', 'random'
+    ], f"Unsupported action selection method {self.action_selection}. Supported: 'max', 'random'."
 
-      def get_noisy_network_weights_norm():
-        weight_mu_norm = []
-        weight_mu_sigma_norm = []
-        for name, module in self.model.named_modules():
-          if isinstance(module, NoisyLinear):
-            weight_mu_norm.append(torch.norm(module.weight_mu).item())
-            weight_mu_sigma_norm.append(torch.norm(module.weight_sigma).item())
-        return np.array(weight_mu_norm).mean(), np.array(
-            weight_mu_sigma_norm).mean().item()
-
-      weight_mu_norm, weight_mu_sigma_norm = get_noisy_network_weights_norm()
-      self.summary_writer.add_scalar("Action/NoisyNetworkWeightMuNorm",
-                                     weight_mu_norm)
-      self.summary_writer.add_scalar("Action/NoisyNetworkWeightSigmaNorm",
-                                     weight_mu_sigma_norm)
+    if self.action_selection == 'random':
+      action = np.random.randint(low=0,
+                                 high=self.action_size,
+                                 size=self.num_envs)
+      act_values = np.zeros((self.num_envs, self.action_size))
+      return action.astype(int), act_values
     else:
-      action = np.zeros(self.num_envs)
-      random_action_idx = np.random.rand(self.num_envs) < self.epsilon
-      action[random_action_idx] = np.random.randint(
-          low=0, high=self.action_size, size=self.num_envs)[random_action_idx]
-      action[~random_action_idx] = np.argmax(q_values_np,
-                                             axis=1)[~random_action_idx]
+      with torch.no_grad():
+        q_values = self.model(observation.as_input(self.device))
+        q_values_np = q_values.cpu().detach().numpy()
+        # "Act values" are q values for most cases but for softmax.
+        act_values = q_values_np
 
-      self.summary_writer.add_scalar("Action/Epsilon", self.epsilon)
+      if self.apply_noisy_network:
+        action = np.argmax(q_values_np, axis=1)
+
+        def get_noisy_network_weights_norm():
+          weight_mu_norm = []
+          weight_mu_sigma_norm = []
+          for name, module in self.model.named_modules():
+            if isinstance(module, NoisyLinear):
+              weight_mu_norm.append(torch.norm(module.weight_mu).item())
+              weight_mu_sigma_norm.append(
+                  torch.norm(module.weight_sigma).item())
+          return np.array(weight_mu_norm).mean(), np.array(
+              weight_mu_sigma_norm).mean().item()
+
+        weight_mu_norm, weight_mu_sigma_norm = get_noisy_network_weights_norm()
+        self.summary_writer.add_scalar("Action/NoisyNetworkWeightMuNorm",
+                                       weight_mu_norm)
+        self.summary_writer.add_scalar("Action/NoisyNetworkWeightSigmaNorm",
+                                       weight_mu_sigma_norm)
+      if self.action_selection == 'max':
+        action = np.zeros(self.num_envs)
+        random_action_idx = np.random.rand(self.num_envs) < self.epsilon
+        action[random_action_idx] = np.random.randint(
+            low=0, high=self.action_size,
+            size=self.num_envs)[random_action_idx]
+        action[~random_action_idx] = np.argmax(q_values_np,
+                                               axis=1)[~random_action_idx]
+
+        self.summary_writer.add_scalar("Action/Epsilon", self.epsilon)
+
     return action.astype(int), act_values
 
   def clip_gradients(self):
