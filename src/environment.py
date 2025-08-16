@@ -240,24 +240,43 @@ class RepeatActionEnv(gym.vector.VectorWrapper):
     self.num_repeat_action = config.get('num_repeat_action', 1)
     if self.num_repeat_action < 1:
       raise ValueError("num_repeat_action must be >= 1")
-    if isinstance(self.env, VectorEnv):
-      # TODO:
-      # RepeatActionEnv does not support vectorized environments yet, because
-      # environments get auto-reset after done or truncated, so I need to
-      # remember which ones did get reset and hard-reset before returning them.
-      raise ValueError(
-          "RepeatActionEnv does not support vectorized environments (yet).")
+    self.observation_wrapper = self.env
+    while not isinstance(self.observation_wrapper, ObservationWrapper):
+      self.observation_wrapper = self.observation_wrapper.env
 
   def step(self, action: int) -> Tuple[Observation, float, bool, bool, dict]:
-    total_reward = 0.0
-    terminated = truncated = False
-    obs = info = None
+    num_envs = self.env.num_envs
+    total_reward = np.zeros((num_envs, ))
+    terminated = np.zeros((num_envs, ), dtype=bool)
+    truncated = np.zeros((num_envs, ), dtype=bool)
+    ret_obs = [None] * num_envs
+    info = None
+    terminated_or_truncated = set()
     for _ in range(self.num_repeat_action):
-      obs, reward, terminated, truncated, info = self.env.step(action)
-      total_reward += reward
-      if terminated or truncated:
-        break
-    return obs, total_reward, terminated, truncated, info
+      _obs, _reward, _terminated, _truncated, info = self.env.step(action)
+      for i, (o, r, t, tr) in enumerate(
+          zip(_obs.as_list(), _reward, _terminated, _truncated)):
+        if i in terminated_or_truncated:
+          continue
+        total_reward[i] += r
+        terminated[i] |= t
+        truncated[i] |= tr
+        if t or tr:
+          terminated_or_truncated.add(i)
+        else:
+          ret_obs[i] = o
+
+    # Now reset environments that got terminated or truncated, so that the
+    # first observation is the one after the reset.
+    for i in terminated_or_truncated:
+      obs, info = self.env.unwrapped.envs[i].reset()
+
+      # Convert the observation to the expected Observation type
+      ret_obs[i] = self.observation_wrapper.to_observation(obs)
+
+    # TODO: info is not handled correctly in this impl, nobody should depend on it
+    return merge_observations(
+        ret_obs), total_reward, terminated, truncated, info
 
   def reset(self, **kwargs) -> Tuple[Observation, dict]:
     obs, info = self.env.reset(**kwargs)
@@ -430,6 +449,9 @@ class CaptureRenderFrameEnv(gym.vector.VectorWrapper):
   def __init__(self, env: VectorEnv, config: dict = None) -> None:
     super().__init__(env)
     self.rendered_frame: Optional[np.ndarray] = None
+    # We capture last rendered frame to render frames offset from the current step,
+    # as otherwise we show the next frame with the agents action values.
+    self.last_rendered_frame: Optional[np.ndarray] = None
     config = config or {}
     self.mode = config.get('mode', 'capture')
     self.observation_is_frame = config.get('observation_is_frame', False)
@@ -440,6 +462,7 @@ class CaptureRenderFrameEnv(gym.vector.VectorWrapper):
   def step(self, action: int) -> Tuple[Observation, float, bool, bool, dict]:
     obs, reward, terminated, truncated, info = self.env.step(action)
 
+    self.last_rendered_frame = self.rendered_frame
     if not self.observation_is_frame:
       self.rendered_frame = np.array([
           self.env.unwrapped.envs[i].render() for i in range(self.env.num_envs)
@@ -461,11 +484,35 @@ class CaptureRenderFrameEnv(gym.vector.VectorWrapper):
       ])
     else:
       self.rendered_frame = obs.frame
+
+    self.last_rendered_frame = self.rendered_frame
     if self.mode == 'replace':
       # For replace mode, we need to render the initial frame
       return Observation(frame=self.rendered_frame, dense=None), info
     else:  # mode == 'capture'
       return obs, info
+
+
+class ClipRewardEnv(gym.vector.VectorWrapper):
+  """
+  Clips the reward to be between -1 and 1.
+
+  This is useful for environments where the reward can be very large or very small,
+  and we want to normalize it to a smaller range.
+
+  config options:
+    - None
+  """
+
+  def __init__(self, env: VectorEnv, config: dict = None) -> None:
+    super().__init__(env)
+    self.clip_min = config.get('clip_min', -float('inf'))
+    self.clip_max = config.get('clip_max', float('inf'))
+
+  def step(self, action: int) -> Tuple[Observation, float, bool, bool, dict]:
+    obs, reward, terminated, truncated, info = self.env.step(action)
+    clipped_reward = np.clip(reward, self.clip_min, self.clip_max)
+    return obs, clipped_reward, terminated, truncated, info
 
 
 def create_environment(config: dict) -> gym.Env:
@@ -517,6 +564,8 @@ def create_environment(config: dict) -> gym.Env:
       env = HistoryEnv(env, config.get('HistoryEnv', {}))
     elif wrapper == 'CaptureRenderFrameEnv':
       env = CaptureRenderFrameEnv(env, config.get('CaptureRenderFrameEnv', {}))
+    elif wrapper == 'ClipRewardEnv':
+      env = ClipRewardEnv(env, config.get('ClipRewardEnv', {}))
     else:
       raise ValueError(f"Unknown environment wrapper: {wrapper}")
   return env

@@ -2,16 +2,23 @@ device: mps
 
 seed: 42
 render_upscale_factor: 2
-render_layout: [2, 4]
+render_layout: [3, 6]
 
 env:
-  env_name: SuperMarioBros-v3
+  env_name: SuperMarioBros-v2
   env_wrappers:
+    - RepeatActionEnv
     - CaptureRenderFrameEnv
     - PreprocessFrameEnv
+    - ReturnActionEnv
     - HistoryEnv
   ObservationWrapper:
     input: frame
+  RepeatActionEnv:
+    num_repeat_action: 8
+  ClipRewardEnv:
+    clip_max: 10.0
+    clip_min: -100.0
   CaptureRenderFrameEnv:
     mode: replace
     observation_is_frame: true
@@ -20,14 +27,14 @@ env:
     grayscale: true
     normalize: true
   HistoryEnv:
-    history_length: 4
+    history_length: 3
 
   env_action_labels: ['NOOP', 'right', 'right-jump', 'right-run', 'right-jump-run', 'jump', 'left']
   num_episodes: 10000000
   num_steps: 10000000
   max_steps_per_episode: 10000
   headless: false
-  num_envs: 8
+  num_envs: 18
 
 agent:
   name: mario
@@ -36,10 +43,10 @@ agent:
 
   epsilon: 0.9
   epsilon_min: 0.02
-  epsilon_linear_decay: 0.000025
+  epsilon_linear_decay: 0.00000025
 
-  batch_size: 32
-  min_memory_size: 128
+  batch_size: 256
+  min_memory_size: 512
   loss: huber
   clip_gradients: 100.0
 
@@ -75,8 +82,8 @@ agent:
         channels: [32, 64, 64]
         strides: [4, 2, 1]
 
-      value_hidden_layers: [128,128]
-      advantage_hidden_layers: [128,128]
+      value_hidden_layers: [64,64,64]
+      advantage_hidden_layers: [64,64,64]
 
   disabled_curiosity:
     hidden_layers_dim: [200, 200]

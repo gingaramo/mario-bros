@@ -6,7 +6,7 @@ import torch.nn as nn
 import torch.optim as optim
 import math
 import os
-from src.tb_logging import GlobalStepSummaryWriter as SummaryWriter
+from src.tb_logging import CustomSummaryWriter
 from src.dqn import DQN, DuelingDQN
 from src.environment import Observation
 from src.noisy_network import replace_linear_with_noisy, NoisyLinear
@@ -74,10 +74,16 @@ class Agent:
         print(
             f'Resuming from checkpoint. Episode {self.episodes_trained}, global step {self.global_step}'
         )
-    self.summary_writer = SummaryWriter(log_dir=f"runs/tb_{config['name']}",
-                                        max_queue=100000,
-                                        flush_secs=300,
-                                        purge_step=self.global_step)
+    self.summary_writer = CustomSummaryWriter(
+        log_dir=f"runs/tb_{config['name']}",
+        max_queue=100000,
+        flush_secs=300,
+        purge_step=self.global_step,
+        metric_prefix_sample_mod={
+            'Action/': 100,
+            'Replay/': 100,
+            'ReplayBuffer/': 100
+        })
 
     replay_buffer_config = config.get('replay_buffer', {
         'type': 'uniform',
@@ -359,8 +365,6 @@ class Agent:
     self.summary_writer.add_scalar('Replay/Loss', loss)
     self.summary_writer.add_scalar('Replay/LearningRate',
                                    self.optimizer.param_groups[0]['lr'])
-    if not self.apply_noisy_network:
-      self.summary_writer.add_scalar('Replay/Epsilon', self.epsilon)
     self.summary_writer.add_scalar(
         "Replay/ParamNorm",
         torch.nn.utils.get_total_norm(self.model.parameters()))
