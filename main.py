@@ -46,11 +46,6 @@ def start_keyboard_listener():
   return listener
 
 
-keyboard_thread = threading.Thread(target=start_keyboard_listener)
-keyboard_thread.daemon = True
-keyboard_thread.start()
-
-
 def set_seed(seed: int):
   """Set random seeds for reproducibility across all random number generators."""
   print(f"Setting random seed to: {seed}")
@@ -106,6 +101,13 @@ def main(args):
   init_checkpoints_dir(config)
 
   set_headless_mode(config['env'].get('headless', False))
+  if not is_headless_mode():
+    keyboard_thread = threading.Thread(target=start_keyboard_listener)
+    keyboard_thread.daemon = True
+    keyboard_thread.start()
+    print(
+        "Keyboard listener started. Press 'c' to continue, 'n' for next frame, 's' to enable rendering, 'h' to disable rendering."
+    )
 
   # Pass seed to environment config if configured
   if 'seed' in config:
@@ -132,13 +134,14 @@ def main(args):
   episode_timesteps = [0] * num_envs
   truncated, done = [False] * num_envs, [False] * num_envs
   observation, _ = env.reset()
-  total_reward = [0] * num_envs
+  total_reward = np.zeros((num_envs, ))
 
   if args.record_play:
     recording = Recording(f"./checkpoint/{config['agent']['name']}",
                           f"episode_{agent.episodes_trained}")
 
-  pbar = tqdm(episodes, desc="Starting")
+  pbar = tqdm(total=config['env'].get('num_steps', float('inf')),
+              desc="Starting")
 
   while True:
     if agent.episodes_trained >= config['env']['num_episodes']:
@@ -167,7 +170,6 @@ def main(args):
         pbar.set_description(
             f"Episode: {agent.episodes_trained+1}, Total Reward: {total_reward[i]} Steps: {episode_timestep + 1}"
         )
-        pbar.refresh()
 
         # Reset the environment and prepare for the next episode
         episode_timesteps[i] = 0
@@ -189,6 +191,7 @@ def main(args):
     # Actual RL stuff.
     action, q_values = agent.act(observation)
     next_observation, reward, done, truncated, info = env.step(action)
+    pbar.update(num_envs)
     for i in range(num_envs):
       episode_timesteps[i] += 1
 
