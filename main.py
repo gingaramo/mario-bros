@@ -28,13 +28,14 @@ def on_press(key):
   global FRAMES_FORWARD
   global RENDERING_ENABLED
   try:
-    if key.char == 'c':
+    # Single key presses (with shift modifier)
+    if key.char == 'C':
       FRAMES_FORWARD = -1
-    if key.char == 'n':
+    elif key.char == 'N':
       FRAMES_FORWARD = 1
-    if key.char == 's':
+    elif key.char == 'S':
       set_rendering_enabled(True)
-    if key.char == 'h':
+    elif key.char == 'H':
       set_rendering_enabled(False)
   except AttributeError:
     pass
@@ -106,7 +107,7 @@ def main(args):
     keyboard_thread.daemon = True
     keyboard_thread.start()
     print(
-        "Keyboard listener started. Press 'c' to continue, 'n' for next frame, 's' to enable rendering, 'h' to disable rendering."
+        "Keyboard listener started. Press 'Shift+c' to continue, 'Shift+n' for next frame, 'Shift+s' to enable rendering, 'Shift+h' to disable rendering."
     )
 
   # Pass seed to environment config if configured
