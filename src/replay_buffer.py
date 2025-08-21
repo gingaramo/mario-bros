@@ -229,7 +229,11 @@ class PrioritizedExperienceReplayBuffer(ReplayBuffer):
     self.summary_writer.add_scalar('ReplayBuffer/Alpha', self.alpha)
     self.summary_writer.add_scalar('ReplayBuffer/Beta', self.get_beta())
 
-    samples = np.random.uniform(0, self.surprise.get_sum(), size=batch_size)
+    try:
+      samples = np.random.uniform(0, self.surprise.get_sum(), size=batch_size)
+    except OverflowError as e:
+      raise ValueError(
+          f"Cannot sample, {self.surprise.get_sum()} out of bounds. {e}")
     indices = [self.surprise.find_index(sample) for sample in samples]
     min_prob = self.surprise.get_min() / self.surprise.get_sum()
 

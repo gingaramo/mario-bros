@@ -132,6 +132,23 @@ class DQN(BaseDQN):
 
     self.activation = torch.nn.LeakyReLU()
 
+    # Initialize weights properly
+    self._initialize_weights()
+
+  def _initialize_weights(self):
+    """Initialize network weights to prevent initial NaN issues"""
+    for module in self.modules():
+      if isinstance(module, nn.Linear):
+        # Xavier/Glorot initialization for linear layers
+        nn.init.xavier_uniform_(module.weight)
+        if module.bias is not None:
+          nn.init.constant_(module.bias, 0)
+      elif isinstance(module, (nn.Conv2d, nn.Conv3d)):
+        # He initialization for conv layers (better for ReLU activations)
+        nn.init.kaiming_uniform_(module.weight, nonlinearity='leaky_relu')
+        if module.bias is not None:
+          nn.init.constant_(module.bias, 0)
+
   def forward_dense(self, x: torch.Tensor, training: bool) -> torch.Tensor:
     "Forward pass for dense layers only. Expects batch dimension"
     for hidden_layer in self.hidden_layers[:-1]:
@@ -161,6 +178,23 @@ class DuelingDQN(BaseDQN):
     self.advantage_hidden_layers = _create_mlp(advantage_hidden_layers_dim)
 
     self.activation = torch.nn.LeakyReLU()
+
+    # Initialize weights properly
+    self._initialize_weights()
+
+  def _initialize_weights(self):
+    """Initialize network weights to prevent initial NaN issues"""
+    for module in self.modules():
+      if isinstance(module, nn.Linear):
+        # Xavier/Glorot initialization for linear layers
+        nn.init.xavier_uniform_(module.weight)
+        if module.bias is not None:
+          nn.init.constant_(module.bias, 0)
+      elif isinstance(module, (nn.Conv2d, nn.Conv3d)):
+        # He initialization for conv layers (better for ReLU activations)
+        nn.init.kaiming_uniform_(module.weight, nonlinearity='leaky_relu')
+        if module.bias is not None:
+          nn.init.constant_(module.bias, 0)
 
   def forward_dense(self,
                     x: torch.Tensor,

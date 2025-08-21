@@ -515,6 +515,54 @@ class ClipRewardEnv(gym.vector.VectorWrapper):
     return obs, clipped_reward, terminated, truncated, info
 
 
+class AccumulatedRewardEnv(gym.vector.VectorWrapper):
+  """
+  Accumulates rewards over multiple steps and returns them in 'info'.
+  """
+
+  def __init__(self, env: VectorEnv) -> None:
+    super().__init__(env)
+    self.accumulated_reward = np.zeros(env.num_envs, dtype=np.float32)
+
+  def step(self, action: int) -> Tuple[Observation, float, bool, bool, dict]:
+    obs, reward, terminated, truncated, info = self.env.step(action)
+    self.accumulated_reward += reward
+    info['accumulated_reward'] = self.accumulated_reward.copy()
+    if np.any(terminated) or np.any(truncated):
+      # Reset accumulated reward for environments that are done or truncated
+      self.accumulated_reward[terminated | truncated] = 0.0
+    return obs, reward, terminated, truncated, info
+
+  def reset(self, **kwargs) -> Tuple[Observation, dict]:
+    obs, info = self.env.reset(**kwargs)
+    self.accumulated_reward = np.zeros(self.env.num_envs, dtype=np.float32)
+    return obs, info
+
+
+class AccumulatedStepsEnv(gym.vector.VectorWrapper):
+  """
+  Counts the number of steps taken in each environment and returns them in 'info'.
+  """
+
+  def __init__(self, env: VectorEnv) -> None:
+    super().__init__(env)
+    self.episode_steps = np.zeros(env.num_envs, dtype=np.int32)
+
+  def step(self, action: int) -> Tuple[Observation, float, bool, bool, dict]:
+    obs, reward, terminated, truncated, info = self.env.step(action)
+    self.episode_steps += 1
+    info['episode_steps'] = self.episode_steps.copy()
+    if np.any(terminated) or np.any(truncated):
+      # Reset episode steps for environments that are done or truncated
+      self.episode_steps[terminated | truncated] = 0
+    return obs, reward, terminated, truncated, info
+
+  def reset(self, **kwargs) -> Tuple[Observation, dict]:
+    obs, info = self.env.reset(**kwargs)
+    self.episode_steps = np.zeros(self.env.num_envs, dtype=np.int32)
+    return obs, info
+
+
 def create_environment(config: dict) -> gym.Env:
   """ Creates a Gym environment with specified wrappers.
   Args:
@@ -552,6 +600,8 @@ def create_environment(config: dict) -> gym.Env:
   # Always wrap with ObservationWrapper first to ensure Observation objects
   env = ObservationWrapper(
       env, config.get('ObservationWrapper', {'input': 'frame'}))
+  env = AccumulatedRewardEnv(env)
+  env = AccumulatedStepsEnv(env)
 
   for wrapper in config.get('env_wrappers', []):
     if wrapper == 'PreprocessFrameEnv':

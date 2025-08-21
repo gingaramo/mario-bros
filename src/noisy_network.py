@@ -39,8 +39,15 @@ class NoisyLinear(nn.Module):
     self.weight_mu.data.uniform_(-mu_range, mu_range)
     self.weight_sigma.data.fill_(std_init / self.in_features**0.5)
     self.bias.data.uniform_(-mu_range, mu_range)
+    self.bias_sigma.data.fill_(std_init / self.in_features**0.5)
 
   def forward(self, input):
-    weight = self.weight_mu + self.weight_sigma * self.weight_epsilon.normal_()
-    bias = self.bias + self.bias_sigma * self.bias_epsilon.normal_()
+    if self.training:
+      weight = self.weight_mu + self.weight_sigma * self.weight_epsilon.normal_(
+      )
+      bias = self.bias + self.bias_sigma * self.bias_epsilon.normal_()
+    else:
+      # In eval mode, use deterministic weights
+      weight = self.weight_mu
+      bias = self.bias
     return nn.functional.linear(input, weight, bias)

@@ -170,42 +170,41 @@ def frame_with_q_values(next_state, q_values, action, labels, upscale_factor):
   return frame_with_q
 
 
-def render(env,
-           q_values,
-           action,
-           labels,
-           upscale_factor=1,
-           recording=None,
-           layout=None):
-  if should_render() or recording:
+def render(env, q_values, action, config, recording=None):
+  labels = config['env']['env_action_labels']
+  upscale_factor = config.get('render_upscale_factor', 1)
+  layout = config.get('render_layout', None)
+  if not should_render() and not recording:
+    return
 
-    def find_rendered_frame(env):
-      if hasattr(env, 'rendered_frame'):
-        return env.rendered_frame
-      elif hasattr(env, 'env'):
-        return find_rendered_frame(env.env)
-      else:
-        raise ValueError("Environment does not have a rendered frame.")
+  def find_rendered_frame(env):
+    if hasattr(env, 'last_rendered_frame'):
+      return env.last_rendered_frame
+    elif hasattr(env, 'env'):
+      return find_rendered_frame(env.env)
+    else:
+      raise ValueError("Environment does not have a rendered frame.")
 
-    frame = find_rendered_frame(env)
-    # Take the first environment's data, for now. Might be good to render all.
+  frame = find_rendered_frame(env)
+  # Take the first environment's data, for now. Might be good to render all.
 
-    frames = []
-    for frame, q_values, action in zip(frame, q_values, action):
-      # Render the frame with Q-values and action labels
-      frame = frame_with_q_values(frame, q_values, action, labels,
-                                  upscale_factor)
-      frames.append(frame)
+  frames = []
+  for frame, q_values, action in zip(frame, q_values, action):
+    # Render the frame with Q-values and action labels
+    frame = frame_with_q_values(frame, q_values, action, labels,
+                                upscale_factor)
+    frames.append(frame)
 
-    if recording:
-      recording.add_frame(frame[0])
+  if recording:
+    recording.add_frame(frame[0])
 
   if should_render():
     if layout is None:
       # Render square by default.
       layout = (int(math.ceil(q_values.shape[0]**0.5)),
                 int(math.ceil(q_values.shape[0]**0.5)))
-    final_frame = tile_frames_in_grid(frames, layout[0], layout[1])
+    final_frame = tile_frames_in_grid(frames[:layout[0] * layout[1]],
+                                      layout[0], layout[1])
     cv2.imshow("Frame with Q-values", final_frame)
     cv2.waitKey(1)
 

@@ -1,6 +1,8 @@
 device: mps
 
 seed: 42
+render_upscale_factor: 1
+render_layout: [3, 3]
 
 env:
   env_name: CartPole-v1
@@ -14,17 +16,17 @@ env:
   CaptureRenderFrameEnv:
     mode: replace
   PreprocessFrameEnv:
-    resize_shape: [64, 64]
+    resize_shape: [84, 84]
     grayscale: true
     normalize: true
   HistoryEnv:
-    history_length: 8
+    history_length: 4
 
   env_action_labels: [LEFT, RIGHT]
   num_episodes: 8000
   max_steps_per_episode: 500
   headless: false
-  num_envs: 8
+  num_envs: 9
 
 agent:
   name: cartpole_frame
