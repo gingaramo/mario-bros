@@ -6,7 +6,7 @@ import ale_py
 
 from src.config import load_configuration, validate_config
 from src.training_utils import setup_training_environment, initialize_checkpoint_directory
-from src.async_training import run_async_training
+from src.async_training import run_async_training, run_parallel_training
 from src.sync_training import run_sync_training
 
 # Register environments
@@ -40,12 +40,18 @@ def main(args):
   initialize_checkpoint_directory(config, args.config)
 
   # Launch training based on mode
-  if config.get('synchronous_mode', True):
+  execution_mode = config.get('execution_mode', 'synchronous')
+  if execution_mode == 'synchronous':
     print("Running in synchronous mode.")
     run_sync_training(config)
-  else:
+  elif execution_mode == 'asynchronous':
     print("Running in asynchronous mode.")
     run_async_training(config)
+  elif execution_mode == 'parallel':
+    print("Running in parallel mode.")
+    run_parallel_training(config)
+  else:
+    raise ValueError(f"Unknown execution mode: {execution_mode}")
 
 
 def create_argument_parser():

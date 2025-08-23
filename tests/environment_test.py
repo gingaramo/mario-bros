@@ -1158,11 +1158,12 @@ class TestCreateEnvironment(unittest.TestCase):
                                               vectorization_mode="sync",
                                               render_mode='rgb_array')
     # Check wrapper nesting order (outermost to innermost)
-    # Now includes ObservationWrapper at the base
+    # Now includes AccumulatedStepsEnv, AccumulatedRewardEnv, and ObservationWrapper at the base
     self.assertIsInstance(env, ReturnActionEnv)
     self.assertIsInstance(env.env, PreprocessFrameEnv)
-    self.assertIsInstance(env.env.env, ObservationWrapper)
-    self.assertEqual(env.env.env.env, mock_env)
+    # AccumulatedStepsEnv wraps AccumulatedRewardEnv which wraps ObservationWrapper
+    self.assertIsInstance(env.env.env.env.env, ObservationWrapper)
+    self.assertEqual(env.env.env.env.env.env, mock_env)
 
     # Check wrapper configurations
     self.assertTrue(env.env.grayscale)  # PreprocessFrameEnv has grayscale
@@ -1201,12 +1202,13 @@ class TestCreateEnvironment(unittest.TestCase):
                                               render_mode='rgb_array')
 
     # Check wrapper nesting order (outermost to innermost)
-    # Now includes ObservationWrapper at the base
+    # Now includes AccumulatedStepsEnv, AccumulatedRewardEnv, and ObservationWrapper at the base
     self.assertIsInstance(env, CaptureRenderFrameEnv)
     self.assertIsInstance(env.env, HistoryEnv)
     self.assertIsInstance(env.env.env, PreprocessFrameEnv)
-    self.assertIsInstance(env.env.env.env, ObservationWrapper)
-    self.assertEqual(env.env.env.env.env, mock_env)
+    # AccumulatedStepsEnv wraps AccumulatedRewardEnv which wraps ObservationWrapper
+    self.assertIsInstance(env.env.env.env.env.env, ObservationWrapper)
+    self.assertEqual(env.env.env.env.env.env.env, mock_env)
 
     # Check wrapper configurations
     self.assertTrue(env.env.env.grayscale)

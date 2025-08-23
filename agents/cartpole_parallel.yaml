@@ -1,0 +1,68 @@
+device: mps
+
+# For reproducibility.
+seed: 42
+render_upscale_factor: 2
+render_layout: [2, 2]
+replays_until_model_update: 0
+execution_mode: parallel  # Options: 'synchronous', 'asynchronous', 'parallel'
+
+env:
+  env_name: CartPole-v1
+  env_wrappers:
+    - CaptureRenderFrameEnv
+    - ReturnActionEnv
+  ObservationWrapper:
+    input: dense
+  CaptureRenderFrameEnv:
+    mode: capture  # Options: 'capture', 'replace'
+
+  env_action_labels: [LEFT, RIGHT]
+  num_episodes: 1000
+  num_steps: 100000
+  max_steps_per_episode: 500
+  headless: false
+  num_envs: 4
+
+agent:
+  name: cartpole_dense_parallel
+  gamma: 0.99
+
+  apply_noisy_network: true
+
+  epsilon_min: 0.0
+
+  batch_size: 512
+  min_memory_size: 512
+  loss: mse
+  clip_gradients: 40.0
+
+  # Optimizer settings
+  optimizer: adam
+  learning_rate: 0.001
+  lr_scheduler:
+    type: lr_scheduler.LinearLR
+    args:
+      start_factor: 1
+      end_factor: 0.2
+      total_iters: 25000
+
+  action_selection: max
+  double_dqn: true
+
+  replay_buffer:
+    type: prioritized
+    size: 10000
+    alpha: 0.4 # Bias towards high surprise
+    beta: 0.6 # Importance sampling exponent
+    beta_annealing_steps: 20000
+
+  replay_every_n_steps: 1
+  replays_until_target_update: 5
+  checkpoint_every_n_replays: 10
+
+  network:
+    dueling_dqn:
+      value_hidden_layers: [32, 32]
+      advantage_hidden_layers: [32, 32]
+

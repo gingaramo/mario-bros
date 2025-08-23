@@ -79,7 +79,7 @@ def run_async_worker_loop(env, agent, pbar, observation, experience_queue,
     wait_for_frame_step()  # Debug frame-by-frame stepping
 
     # Update network parameters if available
-    if not parameter_queue.empty():
+    if not parameter_queue.empty() or agent.global_step >= 512:
       agent.model.load_state_dict(parameter_queue.get())
 
     if agent.global_step >= config['env']['num_steps']:
@@ -220,7 +220,9 @@ def async_trainer_process(experience_queue, parameter_queue,
   run_trainer_loop(agent, experience_queue, parameter_queue, config)
 
 
-def run_async_training(config):
+def run_async_training(config,
+                       experience_queue_len=EXPERIENCE_QUEUE_SIZE,
+                       parameter_queue_len=PARAMETER_QUEUE_SIZE):
   """
     Coordinate async training with separate worker and trainer processes.
     
@@ -257,3 +259,15 @@ def run_async_training(config):
     experience_queue.close()
     parameter_queue.close()
     trainer_process.terminate()
+
+
+def run_parallel_training(config):
+  """
+    Run workers and trainers in parallel processes, but ensuring
+    that every environment step and training step are in lockstep.
+    Args:
+        config (dict): Configuration dictionary
+    Note:
+        This mode is primarily for benchmarking and debugging.
+    """
+  run_async_training(config, experience_queue_len=0, parameter_queue_len=0)
