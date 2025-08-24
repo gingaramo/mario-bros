@@ -4,7 +4,7 @@ Asynchronous training implementation with separate worker and trainer processes.
 
 import torch
 import threading
-from multiprocessing import Queue, Process
+from multiprocessing import Pipe, Queue, Process
 from tqdm import tqdm
 
 from .agent import Agent
@@ -14,6 +14,7 @@ from .tb_logging import RemoteSummaryWriterClient, RemoteSummaryWriterServer
 from .keyboard_controls import setup_interactive_controls, wait_for_frame_step
 from .training_utils import create_summary_writer
 from .agent_utils import execute_agent_step
+from .profiler import ProfileScope, execution_profiler_singleton
 
 # Queue size constants
 EXPERIENCE_QUEUE_SIZE = 1000
@@ -50,7 +51,7 @@ def setup_async_worker_environment(config):
 
 
 def run_async_worker_loop(env, agent, pbar, observation, experience_queue,
-                          parameter_queue, config):
+                          parameter_queue, execution_mode, config):
   """
     Main loop for the async worker process.
     
@@ -64,8 +65,12 @@ def run_async_worker_loop(env, agent, pbar, observation, experience_queue,
         config: Configuration dictionary
     """
   while True:
-    experience, action, q_values = execute_agent_step(agent, env, observation)
-    experience_queue.put(experience)
+    with ProfileScope("env_step"):
+      experience, action, q_values = execute_agent_step(
+          agent, env, observation)
+
+    with ProfileScope("queue_experience"):
+      experience_queue.put(experience, block=True)
 
     # Update the observation for the next step
     (_, _, _, next_observation, _, _) = experience
@@ -78,9 +83,16 @@ def run_async_worker_loop(env, agent, pbar, observation, experience_queue,
     render(env, q_values, action, config)
     wait_for_frame_step()  # Debug frame-by-frame stepping
 
-    # Update network parameters if available
-    if not parameter_queue.empty() or agent.global_step >= 512:
-      agent.model.load_state_dict(parameter_queue.get())
+    # Update network parameters if available or in parallel mode
+    if not parameter_queue.empty() or execution_mode == 'parallel':
+      if execution_mode == 'parallel':
+        # However in parallel mode we need to have enough experiences to
+        # allow the trainer to do at least one step of training (and send
+        # updated parameters back).
+        if agent.global_step < config['agent']['min_memory_size']:
+          continue
+      with ProfileScope("update_parameters"):
+        agent.model.load_state_dict(parameter_queue.get(block=True))
 
     if agent.global_step >= config['env']['num_steps']:
       print("Maximum number of steps reached.")
@@ -92,7 +104,7 @@ def run_async_worker_loop(env, agent, pbar, observation, experience_queue,
 
 
 def async_worker_process(experience_queue, parameter_queue,
-                         summary_writer_queue, config):
+                         summary_writer_queue, execution_mode, config):
   """
     Main function for the async worker process that interacts with the environment.
     
@@ -111,8 +123,12 @@ def async_worker_process(experience_queue, parameter_queue,
   # Connect to remote summary writer
   agent.summary_writer = RemoteSummaryWriterClient(summary_writer_queue)
 
+  # Prepare for profiling if enabled
+  global execution_profiler_singleton
+  execution_profiler_singleton.set_name(f"{config['agent']['name']}_worker")
+
   run_async_worker_loop(env, agent, pbar, observation, experience_queue,
-                        parameter_queue, config)
+                        parameter_queue, execution_mode, config)
 
 
 def setup_async_trainer_environment(config):
@@ -127,6 +143,9 @@ def setup_async_trainer_environment(config):
     """
   device = torch.device(config['device'])
   env = create_environment(config['env'])
+
+  # Needed for profiling enabled/disabled.
+  setup_interactive_controls()
 
   # The summary writer is created here to avoid issues with multiple processes
   # trying to write to the same file
@@ -159,7 +178,8 @@ def start_summary_writer_server(summary_writer_queue, summary_writer):
   return summary_writer_thread
 
 
-def run_trainer_loop(agent, experience_queue, parameter_queue, config):
+def run_trainer_loop(agent, experience_queue, parameter_queue, execution_mode,
+                     config):
   """
     Main training loop for processing experiences and updating the model.
     
@@ -174,15 +194,25 @@ def run_trainer_loop(agent, experience_queue, parameter_queue, config):
 
   while True:
     # Process all available experiences
-    while not experience_queue.empty():
-      observation, action, reward, next_observation, done, info = experience_queue.get(
-      )
-      agent.remember(observation, action, reward, next_observation, done)
+    with ProfileScope("pop_experiences"):
+      if execution_mode == 'parallel':
+        # In parallel mode we want to ensure that we process at least one
+        # experience per environment step.
+        observation, action, reward, next_observation, done, info = experience_queue.get(
+            block=True)
+        agent.remember(observation, action, reward, next_observation, done)
+      else:
+        while not experience_queue.empty():
+          observation, action, reward, next_observation, done, info = experience_queue.get(
+              block=True)
+          agent.remember(observation, action, reward, next_observation, done)
 
     # Train the agent if replay is successful
-    if agent.replay():
-      pbar.update(config['agent']['batch_size'])
+    with ProfileScope("agent_replay"):
+      if replay := agent.replay():
+        pbar.update(config['agent']['batch_size'])
 
+    if replay:
       replays_until_model_update -= 1
       if replays_until_model_update <= 0:
         replays_until_model_update = config['replays_until_model_update']
@@ -191,11 +221,12 @@ def run_trainer_loop(agent, experience_queue, parameter_queue, config):
             k: v.clone().cpu()
             for k, v in agent.model.state_dict().items()
         }
-        parameter_queue.put(state_dict_copy)
+        with ProfileScope("send_parameters"):
+          parameter_queue.put(state_dict_copy, block=True)
 
 
 def async_trainer_process(experience_queue, parameter_queue,
-                          summary_writer_queue, config):
+                          summary_writer_queue, execution_mode, config):
   """
     Main function for the async trainer process that handles model training.
     
@@ -216,11 +247,17 @@ def async_trainer_process(experience_queue, parameter_queue,
   summary_writer_thread = start_summary_writer_server(summary_writer_queue,
                                                       summary_writer)
 
+  # Prepare for profiling if enabled
+  global execution_profiler_singleton
+  execution_profiler_singleton.set_name(f"{config['agent']['name']}_trainer")
+
   # Run the main training loop
-  run_trainer_loop(agent, experience_queue, parameter_queue, config)
+  run_trainer_loop(agent, experience_queue, parameter_queue, execution_mode,
+                   config)
 
 
 def run_async_training(config,
+                       execution_mode='async',
                        experience_queue_len=EXPERIENCE_QUEUE_SIZE,
                        parameter_queue_len=PARAMETER_QUEUE_SIZE):
   """
@@ -236,17 +273,18 @@ def run_async_training(config,
         the trainer process focuses on experience replay and model updates.
     """
   # Create communication queues between processes
-  experience_queue = Queue(maxsize=EXPERIENCE_QUEUE_SIZE)
-  parameter_queue = Queue(maxsize=PARAMETER_QUEUE_SIZE)
+  experience_queue = Queue(maxsize=experience_queue_len)
+  parameter_queue = Queue(maxsize=parameter_queue_len)
   summary_writer_queue = Queue(maxsize=SUMMARY_WRITER_QUEUE_SIZE)
 
   # Create and start worker and trainer processes
   worker_process = Process(target=async_worker_process,
                            args=(experience_queue, parameter_queue,
-                                 summary_writer_queue, config))
+                                 summary_writer_queue, execution_mode, config))
   trainer_process = Process(target=async_trainer_process,
                             args=(experience_queue, parameter_queue,
-                                  summary_writer_queue, config))
+                                  summary_writer_queue, execution_mode,
+                                  config))
 
   worker_process.start()
   trainer_process.start()
@@ -270,4 +308,7 @@ def run_parallel_training(config):
     Note:
         This mode is primarily for benchmarking and debugging.
     """
-  run_async_training(config, experience_queue_len=0, parameter_queue_len=0)
+  run_async_training(config,
+                     execution_mode='parallel',
+                     experience_queue_len=1,
+                     parameter_queue_len=1)

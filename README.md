@@ -67,3 +67,10 @@ For more detailed testing information, see [src/TEST_README.md](src/TEST_README.
 ```bash
 sudo py-spy record -o profile.svg -- python main.py --config agents/basic.yaml
 ```
+
+# Timeline Profiling with built-in profiler
+
+To render profiles that allow you to see a timeline of events, for example when interested in timing of different
+stages (training, env_step, etc), you can capture a profile with Shift+P and save it with Shift+O while running,
+and run `src/profile_timeline.py` passing the suffix of your agent's name as `--profile` flag. The output will
+look something like [this](./timeline_output/timeline.html)

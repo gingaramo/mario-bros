@@ -58,7 +58,7 @@ agent:
     beta_annealing_steps: 20000
 
   replay_every_n_steps: 1
-  replays_until_target_update: 5
+  replays_until_target_update: 20
   checkpoint_every_n_replays: 10
 
   network:

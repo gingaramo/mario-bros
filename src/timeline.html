@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Training Mario Profile Timeline Visualization</title>
+    <link rel="stylesheet" href="timeline.css">
+</head>
+<body>
+    <div class="main-container">
+        <h1>Training Mario Profile Timeline Visualization</h1>
+        <div class="controls">
+            <div class="zoom-controls">
+                <button onclick="zoomIn()">🔍 Zoom In</button>
+                <button onclick="zoomOut()">🔎 Zoom Out</button>
+                <button onclick="resetZoom()">↻ Reset Zoom</button>
+                <span id="zoom-level">Zoom: 100%</span>
+            </div>
+        </div>
+        <div class="timeline-wrapper">
+            <div id="timeline-app" class="timeline-content"></div>
+        </div>
+    </div>
+    <div id="tooltip" class="tooltip" style="display: none;"></div>
+    <script src="timeline.js"></script>
+</body>
+</html>

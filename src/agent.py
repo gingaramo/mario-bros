@@ -6,6 +6,7 @@ import torch.nn as nn
 import torch.optim as optim
 import math
 import os
+from src.profiler import ProfileScope
 from src.tb_logging import CustomSummaryWriter
 from src.dqn import DQN, DuelingDQN
 from src.environment import Observation
@@ -221,7 +222,8 @@ class Agent:
       return action.astype(int), act_values
     elif self.action_selection == 'max':
       with torch.no_grad():
-        q_values = self.model(observation.as_input(self.device))
+        with ProfileScope("model_inference"):
+          q_values = self.model(observation.as_input(self.device))
         q_values_np = q_values.detach().cpu().numpy()
 
       if self.apply_noisy_network:
