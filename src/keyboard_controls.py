@@ -2,6 +2,7 @@
 Keyboard controls and interactive debugging utilities.
 """
 
+import os
 import threading
 from pynput import keyboard
 from .render import set_rendering_enabled, is_headless_mode
@@ -11,6 +12,8 @@ KEY_CONTINUE = 'C'
 KEY_NEXT_FRAME = 'N'
 KEY_ENABLE_RENDERING = 'S'
 KEY_DISABLE_RENDERING = 'H'
+KEY_ENABLE_PROFILING = 'P'
+KEY_DISABLE_PROFILING = 'O'
 
 # Frame stepping control (global state for keyboard interaction)
 FRAMES_FORWARD = -1
@@ -40,6 +43,17 @@ def handle_keyboard_input(key):
       set_rendering_enabled(True)
     elif key.char == KEY_DISABLE_RENDERING:
       set_rendering_enabled(False)
+    elif key.char == KEY_ENABLE_PROFILING:
+      from .profiler import execution_profiler_singleton
+      execution_profiler_singleton.start()
+      import os
+      pid = os.getpid()
+      print("Profiling enabled. PID:", pid)
+    elif key.char == KEY_DISABLE_PROFILING:
+      from .profiler import execution_profiler_singleton
+      execution_profiler_singleton.save()
+      execution_profiler_singleton.stop()
+      print("Profiling disabled.")
   except AttributeError:
     # Handle special keys that don't have a char attribute
     pass
