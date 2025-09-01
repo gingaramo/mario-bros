@@ -2,313 +2,165 @@
 Asynchronous training implementation with separate worker and trainer processes.
 """
 
-import torch
+import numpy as np
+import time
 import threading
-from multiprocessing import Pipe, Queue, Process
 from tqdm import tqdm
 
-from .agent import Agent
 from .environment import create_environment
-from .render import render, set_headless_mode
-from .tb_logging import RemoteSummaryWriterClient, RemoteSummaryWriterServer
-from .keyboard_controls import setup_interactive_controls, wait_for_frame_step
+from .render import render
+from .keyboard_controls import wait_for_frame_step
 from .training_utils import create_summary_writer
-from .agent_utils import execute_agent_step
-from .profiler import ProfileScope, execution_profiler_singleton
-
-# Queue size constants
-EXPERIENCE_QUEUE_SIZE = 1000
-PARAMETER_QUEUE_SIZE = 1
-SUMMARY_WRITER_QUEUE_SIZE = 1000
+from .agent_utils import execute_agent_step, create_agent
+from .profiler import ProfileScope
 
 
-def setup_async_worker_environment(config):
+def async_worker_thread(config, agent, worker_id=0):
   """
-    Setup the environment and agent for the async worker process.
-    
+    Main function for the async worker thread that interacts with the environment.
+
     Args:
         config (dict): Configuration dictionary
-        
-    Returns:
-        tuple: (env, agent, pbar, observation) - initialized environment components
+        agent (Agent): The agent instance
+        worker_id (int): The ID of the worker thread
+
+    Note:
+        This thread handles agent inference, environment interaction, rendering, and
+        keyboard controls. It runs independently from the training thread for better
+        performance.
     """
-  set_headless_mode(config['env'].get('headless', False))
-  setup_interactive_controls()
+  pbar = tqdm(total=config['env']['num_steps'] /
+              config['env'].get('num_env_workers', 1),
+              desc="Asynchronous Worker",
+              position=worker_id + 1,
+              unit=' experiences',
+              unit_scale=True)
 
-  device = torch.device(config['device'])
-  print(f"Worker using device: {device}")
+  # We only run synchronous environment for the worker executed by the main thread
+  # that is the one with access to GUI and frame rendering logic.
+  env = create_environment(
+      config['env'], mode='asynchronous' if worker_id > 0 else 'synchronous')
+  observation, info = env.reset()
+  episode_start = np.zeros(env.num_envs, dtype=bool)
 
-  env = create_environment(config['env'])
-  summary_writer = RemoteSummaryWriterClient(None)  # Will be set by caller
-  agent = Agent(env, device, summary_writer, config['agent'])
+  while agent.global_step < config['env']['num_steps']:
+    with ProfileScope("agent_act"):
+      action, q_values = agent.act(observation)
+    with ProfileScope("execute_agent_step"):
+      experience = execute_agent_step(action, lambda action: env.step(action),
+                                      observation, agent.summary_writer)
 
-  pbar = tqdm(total=config['env']['num_steps'],
-              desc="Agent process",
-              position=0)
+      # Update progress bar
+      pbar.update(env.num_envs)
 
-  observation, _ = env.reset()
-  return env, agent, pbar, observation
+    (observation, action, reward, next_observation, done, info) = experience
 
-
-def run_async_worker_loop(env, agent, pbar, observation, experience_queue,
-                          parameter_queue, execution_mode, config):
-  """
-    Main loop for the async worker process.
-    
-    Args:
-        env: The environment
-        agent: The RL agent
-        pbar: Progress bar for tracking steps
-        observation: Initial observation
-        experience_queue: Queue for sending experiences to trainer
-        parameter_queue: Queue for receiving model updates
-        config: Configuration dictionary
-    """
-  while True:
-    with ProfileScope("env_step"):
-      experience, action, q_values = execute_agent_step(
-          agent, env, observation)
-
-    with ProfileScope("queue_experience"):
-      experience_queue.put(experience, block=True)
-
-    # Update the observation for the next step
-    (_, _, _, next_observation, _, _) = experience
+    # Store experience if we're not at the begining of an episode
+    for i, (obs, act, rew, neo, don) in enumerate(
+        zip(observation.as_list_input('cpu'), action, reward,
+            next_observation.as_list_input('cpu'), done)):
+      if not episode_start[i]:
+        agent.remember(obs, act, rew, neo, don)
     observation = next_observation
+    episode_start = done
 
-    # Update progress bar
-    pbar.update(env.num_envs)
-
-    # Render frames if rendering is enabled or recording is active
-    render(env, q_values, action, config)
+    # Render frames if rendering is enabled or recording is active.
+    # Note: Only worker_id 0 is run in the main process thread, and is allowed to
+    # render GUI.
+    if worker_id == 0:
+      render(info, q_values, action, config)
     wait_for_frame_step()  # Debug frame-by-frame stepping
 
-    # Update network parameters if available or in parallel mode
-    if not parameter_queue.empty() or execution_mode == 'parallel':
-      if execution_mode == 'parallel':
-        # However in parallel mode we need to have enough experiences to
-        # allow the trainer to do at least one step of training (and send
-        # updated parameters back).
-        if agent.global_step < config['agent']['min_memory_size']:
-          continue
-      with ProfileScope("update_parameters"):
-        agent.model.load_state_dict(parameter_queue.get(block=True))
-
-    if agent.global_step >= config['env']['num_steps']:
-      print("Maximum number of steps reached.")
-      break
+  print("Maximum number of steps reached.")
 
   agent.save_checkpoint()
-  env.close()
   pbar.close()
 
 
-def async_worker_process(experience_queue, parameter_queue,
-                         summary_writer_queue, execution_mode, config):
-  """
-    Main function for the async worker process that interacts with the environment.
-    
-    Args:
-        experience_queue (Queue): Queue to send experiences to the trainer
-        parameter_queue (Queue): Queue to receive model updates from trainer  
-        summary_writer_queue (Queue): Queue for tensorboard logging
-        config (dict): Configuration dictionary
-        
-    Note:
-        This process handles environment interaction, rendering, and keyboard controls.
-        It runs independently from the training process for better performance.
-    """
-  env, agent, pbar, observation = setup_async_worker_environment(config)
-
-  # Connect to remote summary writer
-  agent.summary_writer = RemoteSummaryWriterClient(summary_writer_queue)
-
-  # Prepare for profiling if enabled
-  global execution_profiler_singleton
-  execution_profiler_singleton.set_name(f"{config['agent']['name']}_worker")
-
-  run_async_worker_loop(env, agent, pbar, observation, experience_queue,
-                        parameter_queue, execution_mode, config)
-
-
-def setup_async_trainer_environment(config):
-  """
-    Setup the training environment for the async trainer process.
-    
-    Args:
-        config (dict): Configuration dictionary
-        
-    Returns:
-        tuple: (device, env, summary_writer, agent) - initialized training components
-    """
-  device = torch.device(config['device'])
-  env = create_environment(config['env'])
-
-  # Needed for profiling enabled/disabled.
-  setup_interactive_controls()
-
-  # The summary writer is created here to avoid issues with multiple processes
-  # trying to write to the same file
-  summary_writer = create_summary_writer(config)
-  agent = Agent(env, device, summary_writer, config['agent'])
-
-  print(f"Trainer using device: {device}")
-  print(f"Model summary: {agent.model}")
-  print(f"Parameters: {sum(p.numel() for p in agent.model.parameters())}")
-
-  return device, env, summary_writer, agent
-
-
-def start_summary_writer_server(summary_writer_queue, summary_writer):
-  """
-    Start the summary writer server in a separate thread.
-    
-    Args:
-        summary_writer_queue (Queue): Queue for receiving logging requests
-        summary_writer: The summary writer instance
-        
-    Returns:
-        threading.Thread: The summary writer server thread
-    """
-  summary_writer_server = RemoteSummaryWriterServer(summary_writer_queue,
-                                                    summary_writer)
-  summary_writer_thread = threading.Thread(target=summary_writer_server.run)
-  summary_writer_thread.daemon = True
-  summary_writer_thread.start()
-  return summary_writer_thread
-
-
-def run_trainer_loop(agent, experience_queue, parameter_queue, execution_mode,
-                     config):
-  """
-    Main training loop for processing experiences and updating the model.
-    
-    Args:
-        agent: The RL agent
-        experience_queue (Queue): Queue containing experiences from worker
-        parameter_queue (Queue): Queue for sending model updates to worker
-        config (dict): Configuration dictionary
-    """
-  pbar = tqdm(total=None, desc="Trainer process", position=1)
-  replays_until_model_update = config['replays_until_model_update']
-
-  while True:
-    # Process all available experiences
-    with ProfileScope("pop_experiences"):
-      if execution_mode == 'parallel':
-        # In parallel mode we want to ensure that we process at least one
-        # experience per environment step.
-        observation, action, reward, next_observation, done, info = experience_queue.get(
-            block=True)
-        agent.remember(observation, action, reward, next_observation, done)
-      else:
-        while not experience_queue.empty():
-          observation, action, reward, next_observation, done, info = experience_queue.get(
-              block=True)
-          agent.remember(observation, action, reward, next_observation, done)
-
-    # Train the agent if replay is successful
-    with ProfileScope("agent_replay"):
-      if replay := agent.replay():
-        pbar.update(config['agent']['batch_size'])
-
-    if replay:
-      replays_until_model_update -= 1
-      if replays_until_model_update <= 0:
-        replays_until_model_update = config['replays_until_model_update']
-        # Create a copy of model parameters for the worker process
-        state_dict_copy = {
-            k: v.clone().cpu()
-            for k, v in agent.model.state_dict().items()
-        }
-        with ProfileScope("send_parameters"):
-          parameter_queue.put(state_dict_copy, block=True)
-
-
-def async_trainer_process(experience_queue, parameter_queue,
-                          summary_writer_queue, execution_mode, config):
+def async_trainer_thread(config, agent, stop_event):
   """
     Main function for the async trainer process that handles model training.
     
     Args:
-        experience_queue (Queue): Queue to receive experiences from worker
-        parameter_queue (Queue): Queue to send model updates to worker
-        summary_writer_queue (Queue): Queue for tensorboard logging
         config (dict): Configuration dictionary
-        
+        agent (Agent): The agent instance
+        stop_event (threading.Event): Event to signal the thread to stop
+
     Note:
         This process handles all training operations including experience replay,
         model updates, and tensorboard logging. It runs independently from
-        environment interaction for better performance.
+        environment interaction for better GPU performance.
     """
-  device, env, summary_writer, agent = setup_async_trainer_environment(config)
-
-  # Start the summary writer server thread
-  summary_writer_thread = start_summary_writer_server(summary_writer_queue,
-                                                      summary_writer)
-
-  # Prepare for profiling if enabled
-  global execution_profiler_singleton
-  execution_profiler_singleton.set_name(f"{config['agent']['name']}_trainer")
-
   # Run the main training loop
-  run_trainer_loop(agent, experience_queue, parameter_queue, execution_mode,
-                   config)
+  pbar = tqdm(total=None,
+              desc="Trainer thread",
+              position=0,
+              unit=' experiences',
+              unit_scale=True)
+
+  while stop_event.is_set() is False:
+    # Train the agent if replay is successful
+    with ProfileScope("agent_replay"):
+      if agent.replay():
+        ProfileScope.add_metadata('batch_size', config['agent']['batch_size'])
+        pbar.update(config['agent']['batch_size'])
+      else:
+        # We have not yet accumulated enough experiences.
+        time.sleep(1)
 
 
-def run_async_training(config,
-                       execution_mode='async',
-                       experience_queue_len=EXPERIENCE_QUEUE_SIZE,
-                       parameter_queue_len=PARAMETER_QUEUE_SIZE):
+def validate_config(config):
+  assert config['env']['num_envs'] % config['env'].get(
+      'num_env_workers', 1
+  ) == 0, "Number of environments must be divisible by number of workers. " +\
+  f"Got {config['env']['num_envs']} and {config['env'].get('num_env_workers', 1)}"
+
+
+def run_async_training(config):
   """
     Coordinate async training with separate worker and trainer processes.
     
     Args:
         config (dict): Configuration dictionary
-        
+
     Note:
         Creates separate processes for environment interaction (worker) and
-        model training (trainer) connected via queues for better performance.
+        model training (trainer) connected via multiprocessing queues.
         The worker process handles environment stepping and rendering while
         the trainer process focuses on experience replay and model updates.
     """
-  # Create communication queues between processes
-  experience_queue = Queue(maxsize=experience_queue_len)
-  parameter_queue = Queue(maxsize=parameter_queue_len)
-  summary_writer_queue = Queue(maxsize=SUMMARY_WRITER_QUEUE_SIZE)
+  validate_config(config)
 
-  # Create and start worker and trainer processes
-  worker_process = Process(target=async_worker_process,
-                           args=(experience_queue, parameter_queue,
-                                 summary_writer_queue, execution_mode, config))
-  trainer_process = Process(target=async_trainer_process,
-                            args=(experience_queue, parameter_queue,
-                                  summary_writer_queue, execution_mode,
-                                  config))
+  # Update config for multiple workers:
+  config['env']['num_envs'] = config['env']['num_envs'] // config['env'].get(
+      'num_env_workers', 1)
 
-  worker_process.start()
-  trainer_process.start()
+  # Create and start and trainer processes.
+  # 'env' is unused here, but needed for agent to initialize the agent,
+  # workers will create their own copies (one sync, and many async).
+  unused_env = create_environment(config['env'])
+  summary_writer = create_summary_writer(config)
+  agent = create_agent(config, unused_env, summary_writer)
+  stop_event = threading.Event()
+  trainer_thread = threading.Thread(target=async_trainer_thread,
+                                    args=(config, agent, stop_event))
+  trainer_thread.start()
 
-  try:
-    # Wait for worker to complete (reaches max steps)
-    worker_process.join()
-  finally:
-    # Clean up resources
-    experience_queue.close()
-    parameter_queue.close()
-    trainer_process.terminate()
+  # If we asked for N workers, N-1 workers will run in threads.
+  worker_threads = []
+  for i in range(config['env'].get('num_env_workers', 1) - 1):
+    worker_thread = threading.Thread(target=async_worker_thread,
+                                     args=(config, agent, i + 1))
+    worker_thread.start()
+    worker_threads.append(worker_thread)
 
+  # Run worker_id 0, which might render GUI, in the main process thread.
+  async_worker_thread(config, agent, worker_id=0)
 
-def run_parallel_training(config):
-  """
-    Run workers and trainers in parallel processes, but ensuring
-    that every environment step and training step are in lockstep.
-    Args:
-        config (dict): Configuration dictionary
-    Note:
-        This mode is primarily for benchmarking and debugging.
-    """
-  run_async_training(config,
-                     execution_mode='parallel',
-                     experience_queue_len=1,
-                     parameter_queue_len=1)
+  # Wait for all worker threads to finish
+  for worker_thread in worker_threads:
+    worker_thread.join()
+
+  # When we are done with env steps, wait for the trainer thread to finish
+  stop_event.set()
+  trainer_thread.join()

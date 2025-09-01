@@ -1,20 +1,17 @@
-from typing import Union, Tuple, List
+from typing import Tuple, List
 import numpy as np
-import random
+import threading
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import math
 import os
 from src.profiler import ProfileScope
-from src.tb_logging import CustomSummaryWriter
 from src.dqn import DQN, DuelingDQN
 from src.environment import Observation
 from src.noisy_network import replace_linear_with_noisy, NoisyLinear
-from src.state import State
 from src.replay_buffer import UniformExperienceReplayBuffer, PrioritizedExperienceReplayBuffer, OrderedExperienceReplayBuffer
 import pickle
-from torch.optim import lr_scheduler
+from torch.optim import lr_scheduler  # Keep -> see horrible exec() hack
 
 
 def get_noisy_network_weights_norm(named_modules):
@@ -170,6 +167,10 @@ class Agent:
           f"self.lr_scheduler = {config['lr_scheduler']['type']}(self.optimizer, **{config['lr_scheduler']['args']})"
       )
 
+    # Mutexes for resources accessed by trainer and worker threads in async execution
+    self.model_lock = threading.Lock()
+    self.replay_buffer_lock = threading.Lock()
+
   @property
   def epsilon(self):
     if self.epsilon_exponential_decay:
@@ -182,22 +183,13 @@ class Agent:
       eps = 0.0
     return max(eps, self.epsilon_min)
 
-  def remember(self, observation: Observation, action: int, reward: float,
-               next_observation: Observation, done: bool):
+  def remember(self, observation: Tuple[List, List], action: int,
+               reward: float, next_observation: Tuple[List, List], done: bool):
     """Stores experience. State gathered from last state sent to act().
     """
-    # Since observations come from multiple environments, we need to
-    # convert them to individual observations for the replay buffer.
-    observation = [
-        obs.as_input(torch.device('cpu')) for obs in observation.as_list()
-    ]
-    next_observation = [
-        obs.as_input(torch.device('cpu'))
-        for obs in next_observation.as_list()
-    ]
-    for obs, act, rew, next_obs, done in zip(observation, action, reward,
-                                             next_observation, done):
-      self.replay_buffer.append(obs, act, rew, next_obs, done)
+    with self.replay_buffer_lock, ProfileScope("replay_buffer_append"):
+      self.replay_buffer.append(observation, action, reward, next_observation,
+                                done)
 
   def act(self, observation: Observation) -> tuple[int, np.ndarray]:
     """Returns the action to take based on the current observation.
@@ -221,9 +213,8 @@ class Agent:
       act_values = np.zeros((self.num_envs, self.action_size))
       return action.astype(int), act_values
     elif self.action_selection == 'max':
-      with torch.no_grad():
-        with ProfileScope("model_inference"):
-          q_values = self.model(observation.as_input(self.device))
+      with torch.no_grad(), self.model_lock, ProfileScope("model_inference"):
+        q_values = self.model(observation.as_input(self.device))
         q_values_np = q_values.detach().cpu().numpy()
 
       if self.apply_noisy_network:
@@ -258,7 +249,7 @@ class Agent:
   def compute_target(self, all_reward: torch.Tensor,
                      all_next_observation: Tuple[torch.Tensor, torch.Tensor],
                      all_done: torch.Tensor) -> torch.Tensor:
-    with torch.no_grad():
+    with torch.no_grad(), self.model_lock:
       # Double DQN is the next line:
       if self.config.get('double_dqn', True):
         # Use the online model to select the best action for the next state
@@ -278,7 +269,8 @@ class Agent:
   def compute_prediction(self, all_observation: Tuple[torch.Tensor,
                                                       torch.Tensor],
                          all_action: torch.Tensor) -> torch.Tensor:
-    q_values = self.model(all_observation, training=True)
+    with self.model_lock:
+      q_values = self.model(all_observation, training=True)
     return torch.gather(q_values, 1, all_action.view(-1, 1)).squeeze(1)
 
   def replay(self):
@@ -290,18 +282,33 @@ class Agent:
     # If this is importance sampling, we need to get the weights
     if isinstance(self.replay_buffer, PrioritizedExperienceReplayBuffer):
       # Sample from the replay buffer
-      (all_observation, all_action, all_reward, all_next_observation, all_done
-       ), importance_sampling, sampled_indices = self.replay_buffer.sample(
-           self.batch_size)
-      importance_sampling = torch.Tensor(importance_sampling).to(self.device)
+      with self.replay_buffer_lock, ProfileScope('replay_buffer_sample'):
+        (all_observation, all_action, all_reward, all_next_observation,
+         all_done
+         ), importance_sampling, sampled_indices = self.replay_buffer.sample(
+             self.batch_size)
+        importance_sampling = torch.Tensor(importance_sampling).to(self.device)
+
+        # Given we are using indices to update the relay buffer we need to do so while
+        # holding the replay buffer lock in this case.
+        target = self.compute_target(all_reward, all_next_observation,
+                                     all_done)
+        prediction = self.compute_prediction(all_observation, all_action)
+
+        # Update the surprise values in the replay buffer
+        self.replay_buffer.update_surprise(
+            sampled_indices, (prediction - target).detach().cpu().numpy())
+
     else:
       # Sample from the replay buffer without importance sampling
-      (all_observation, all_action, all_reward, all_next_observation,
-       all_done) = self.replay_buffer.sample(self.batch_size)
+      with self.replay_buffer_lock, ProfileScope('replay_buffer_sample'):
+        (all_observation, all_action, all_reward, all_next_observation,
+         all_done) = self.replay_buffer.sample(self.batch_size)
       importance_sampling = torch.ones(self.batch_size, device=self.device)
-
-    target = self.compute_target(all_reward, all_next_observation, all_done)
-    prediction = self.compute_prediction(all_observation, all_action)
+      # For the non replay buffer the target and prediction are computed without
+      # replay buffer lock.
+      target = self.compute_target(all_reward, all_next_observation, all_done)
+      prediction = self.compute_prediction(all_observation, all_action)
 
     self.optimizer.zero_grad()
     # Compute the loss
@@ -323,14 +330,10 @@ class Agent:
     loss = loss.sum()
     loss.backward()
     pre_clip_grad_norm = self.clip_gradients()
-    self.optimizer.step()
+    with self.model_lock, ProfileScope('optimizer_step'):
+      self.optimizer.step()
 
     self.trained_experiences += self.batch_size
-
-    # Update the surprise values in the replay buffer
-    if isinstance(self.replay_buffer, PrioritizedExperienceReplayBuffer):
-      self.replay_buffer.update_surprise(
-          sampled_indices, (prediction - target).detach().cpu().numpy())
 
     # Update target model every `target_update_frequency` steps
     self.replays_until_target_update -= 1
@@ -354,7 +357,8 @@ class Agent:
     self.replays_until_checkpoint -= 1
     if self.replays_until_checkpoint % self.config[
         'checkpoint_every_n_replays'] == 0:
-      self.save_checkpoint()
+      with ProfileScope('checkpoint'):
+        self.save_checkpoint()
       self.replays_until_checkpoint = self.config['checkpoint_every_n_replays']
 
     self.lr_scheduler.step() if self.lr_scheduler else None

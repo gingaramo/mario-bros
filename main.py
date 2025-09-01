@@ -3,17 +3,16 @@ import os
 import gymnasium as gym
 import gym_super_mario_bros  # Keep (environment registration)
 import ale_py
+import torch
 
-from src.config import load_configuration, validate_config
-from src.training_utils import setup_training_environment, initialize_checkpoint_directory
-from src.async_training import run_async_training, run_parallel_training
+from src.async_training import run_async_training
+from src.config import load_configuration
+from src.profiler import execution_profiler_singleton
 from src.sync_training import run_sync_training
+from src.training_utils import setup_training_environment
 
 # Register environments
 gym.register_envs(ale_py)
-
-# Constants
-DEFAULT_CONFIG_FILE = 'config.yaml'
 
 
 def main(args):
@@ -33,11 +32,17 @@ def main(args):
   # Load and validate configuration
   args.config = os.path.abspath(args.config)
   config = load_configuration(args.config)
-  validate_config(config)
+
+  # Debugging?
+  if config.get('debug_mode', False):
+    torch.autograd.set_detect_anomaly(True)
 
   # Setup training environment
-  setup_training_environment(config, args.restart)
-  initialize_checkpoint_directory(config, args.config)
+  setup_training_environment(config, args.config, args.restart)
+
+  # Setup profiling.
+  global execution_profiler_singleton
+  execution_profiler_singleton.set_name(f"{config['agent']['name']}")
 
   # Launch training based on mode
   execution_mode = config.get('execution_mode', 'synchronous')
@@ -47,9 +52,6 @@ def main(args):
   elif execution_mode == 'asynchronous':
     print("Running in asynchronous mode.")
     run_async_training(config)
-  elif execution_mode == 'parallel':
-    print("Running in parallel mode.")
-    run_parallel_training(config)
   else:
     raise ValueError(f"Unknown execution mode: {execution_mode}")
 
@@ -67,7 +69,7 @@ def create_argument_parser():
 
   parser.add_argument('--config',
                       type=str,
-                      default=DEFAULT_CONFIG_FILE,
+                      default="",
                       help='Path to the configuration YAML file')
 
   parser.add_argument(

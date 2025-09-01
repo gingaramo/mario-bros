@@ -169,7 +169,8 @@ h1 {
     font-size: 13px; 
     pointer-events: none; 
     z-index: 1000; 
-    white-space: nowrap;
+    white-space: pre-line;
+    max-width: 300px;
     box-shadow: 0 4px 12px rgba(0,0,0,0.15);
     border: 1px solid rgba(255,255,255,0.1);
     font-family: 'Monaco', 'Menlo', monospace;
@@ -179,6 +180,19 @@ h1 {
     color: #74b9ff;
     display: block;
     margin-bottom: 4px;
+}
+
+.metadata-section {
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid rgba(255,255,255,0.2);
+}
+
+.metadata-item {
+    color: #ffeaa7;
+    font-size: 12px;
+    line-height: 1.4;
+    margin-bottom: 2px;
 }
 
 .timeline-wrapper { 

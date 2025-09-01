@@ -2,7 +2,6 @@
 Keyboard controls and interactive debugging utilities.
 """
 
-import os
 import threading
 from pynput import keyboard
 from .render import set_rendering_enabled, is_headless_mode
@@ -73,18 +72,16 @@ def start_keyboard_listener():
 
 def setup_interactive_controls():
   """
-    Setup interactive keyboard controls for debugging and frame stepping.
-    Only runs when not in headless mode.
+    Setup interactive keyboard controls, for debugging, profiling and frame stepping.
     """
-  if not is_headless_mode():
-    keyboard_thread = threading.Thread(target=start_keyboard_listener)
-    keyboard_thread.daemon = True
-    keyboard_thread.start()
-    print("Interactive controls enabled:\n"
-          f"  - Shift+{KEY_CONTINUE}: Continue normal execution\n"
-          f"  - Shift+{KEY_NEXT_FRAME}: Step forward one frame\n"
-          f"  - Shift+{KEY_ENABLE_RENDERING}: Enable rendering\n"
-          f"  - Shift+{KEY_DISABLE_RENDERING}: Disable rendering")
+  keyboard_thread = threading.Thread(target=start_keyboard_listener)
+  keyboard_thread.daemon = True
+  keyboard_thread.start()
+  print("Interactive controls enabled:\n"
+        f"  - Shift+{KEY_CONTINUE}: Continue normal execution\n"
+        f"  - Shift+{KEY_NEXT_FRAME}: Step forward one frame\n"
+        f"  - Shift+{KEY_ENABLE_RENDERING}: Enable rendering\n"
+        f"  - Shift+{KEY_DISABLE_RENDERING}: Disable rendering")
 
 
 def wait_for_frame_step():

@@ -1,3 +1,6 @@
+import threading
+
+
 class ExecutionProfile:
 
   def __init__(self):
@@ -12,12 +15,15 @@ class ExecutionProfile:
   def stop(self):
     self.enabled = False
 
-  def record(self, name, start, finish):
+  def record(self, name, start, finish, metadata={}):
     if not self.enabled:
       return
     if name not in self.records:
       self.records[name] = []
-    self.records[name].append((start, finish))
+    if len(metadata) > 0:
+      self.records[name].append((start, finish, metadata))
+    else:
+      self.records[name].append((start, finish))
 
   def set_name(self, name):
     self.name = name
@@ -28,9 +34,11 @@ class ExecutionProfile:
     filename = f"{self.name}_profile_{os.getpid()}.json"
     with open(filename, 'w') as f:
       json.dump(self.records, f, indent=2)
+    self.records = {}  # Clear records after saving
 
 
 execution_profiler_singleton = ExecutionProfile()
+_thread_local_scope = threading.local()
 
 
 class ProfileScope:
@@ -43,8 +51,21 @@ class ProfileScope:
   """
 
   def __init__(self, name, profiler=execution_profiler_singleton):
-    self.name = name
+    self.name = name + '_' + threading.current_thread().native_id.__str__()
     self.profiler = profiler
+    self.metadata = {}
+    _thread_local_scope.profile_scope = self
+
+  @staticmethod
+  def add_metadata(key, value):
+    if not hasattr(_thread_local_scope, 'profile_scope'):
+      raise RuntimeError("No active profile scope found")
+    _thread_local_scope.profile_scope._add_metadata(key, value)
+
+  def _add_metadata(self, key, value):
+    if not self.profiler.enabled:
+      return
+    self.metadata[key] = value
 
   def __enter__(self):
     from time import time
@@ -54,4 +75,4 @@ class ProfileScope:
   def __exit__(self, exc_type, exc_value, traceback):
     from time import time
     end_time = time()
-    self.profiler.record(self.name, self.start_time, end_time)
+    self.profiler.record(self.name, self.start_time, end_time, self.metadata)

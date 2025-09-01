@@ -2,74 +2,80 @@
 Synchronous training implementation with combined worker/trainer process.
 """
 
-import torch
+import numpy as np
 from tqdm import tqdm
 
-from src.profiler import ProfileScope, execution_profiler_singleton
+from src.profiler import ProfileScope
 
-from .agent import Agent
 from .environment import create_environment
 from .render import render
-from .keyboard_controls import setup_interactive_controls, wait_for_frame_step
+from .keyboard_controls import wait_for_frame_step
 from .training_utils import create_summary_writer
-from .agent_utils import execute_agent_step
+from .agent_utils import execute_agent_step, create_agent
 
 
 def run_sync_training(config):
   """
-    Run synchronous training with combined worker/trainer in single process.
-  
+    Run synchronous training with combined worker/trainer in single process/thread.
+
     Args:
         config (dict): Configuration dictionary
-        
+
     Note:
         In synchronous mode, environment interaction and training happen
-        sequentially in the same process. This is simpler but potentially
+        sequentially in the same process/thread. This is simpler but potentially
         slower than async mode since environment stepping blocks training.
     """
-  setup_interactive_controls()
-
-  device = torch.device(config['device'])
-  print(f"Using device: {device}")
+  # Create environment, summary writer, and agent
   env = create_environment(config['env'])
-
-  global execution_profiler_singleton
-  execution_profiler_singleton.set_name(f"{config['agent']['name']}")
-
-  # Create summary writer for logging
   summary_writer = create_summary_writer(config)
-  agent = Agent(env, device, summary_writer, config['agent'])
-  print(f"Model summary: {agent.model}")
-  print(f"Parameters: {sum(p.numel() for p in agent.model.parameters())}")
+  agent = create_agent(config, env, summary_writer)
 
-  pbar = tqdm(total=config['env']['num_steps'],
-              desc="Synchronous Worker/Trainer process",
-              position=0)
+  train_pbar = tqdm(total=config['env']['num_steps'] //
+                    config['env']['num_envs'],
+                    desc="Synchronous Trainer",
+                    position=0,
+                    unit=' experiences',
+                    unit_scale=True)
+  env_pbar = tqdm(total=config['env']['num_steps'],
+                  desc="Synchronous Worker",
+                  position=1,
+                  unit=' experiences',
+                  unit_scale=True)
 
   observation, _ = env.reset()
-  while True:
-    with ProfileScope("env_step"):
-      experience, action, q_values = execute_agent_step(
-          agent, env, observation)
-
-    # Store experience and train immediately (synchronous)
+  episode_start = np.zeros(env.num_envs, dtype=bool)
+  while agent.global_step < config['env']['num_steps']:
+    with ProfileScope("agent_act"):
+      action, q_values = agent.act(observation)
+    with ProfileScope("execute_agent_step"):
+      experience = execute_agent_step(action, lambda action: env.step(action),
+                                      observation, agent.summary_writer)
+      # Update progress bar
+      env_pbar.update(env.num_envs)
     (observation, action, reward, next_observation, done, info) = experience
-    agent.remember(observation, action, reward, next_observation, done)
-    with ProfileScope("agent_replay"):
-      agent.replay()
-    observation = next_observation
 
-    # Update progress bar
-    pbar.update(env.num_envs)
+    # Store experience if we're not at the begining of an episode
+    for i, (obs, act, rew, neo, don) in enumerate(
+        zip(observation.as_list_input('cpu'), action, reward,
+            next_observation.as_list_input('cpu'), done)):
+      if not episode_start[i]:
+        agent.remember(obs, act, rew, neo, don)
+    observation = next_observation
+    episode_start = done
 
     # Render frames if rendering is enabled or recording is active
-    render(env, q_values, action, config)
+    render(info, q_values, action, config)
     wait_for_frame_step()  # Debug frame-by-frame stepping
 
-    if agent.global_step >= config['env']['num_steps']:
-      print("Maximum number of steps reached.")
-      break
+    with ProfileScope("agent_replay"):
+      if agent.replay():
+        ProfileScope.add_metadata('batch_size', config['agent']['batch_size'])
+        train_pbar.update(config['agent']['batch_size'])
+
+  print("Maximum number of steps reached.")
 
   agent.save_checkpoint()
   env.close()
-  pbar.close()
+  env_pbar.close()
+  train_pbar.close()

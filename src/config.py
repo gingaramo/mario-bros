@@ -2,7 +2,6 @@
 Configuration loading and validation utilities.
 """
 
-import os
 import yaml
 
 
@@ -24,6 +23,7 @@ def load_configuration(config_path):
     with open(config_path, 'r') as f:
       config = yaml.safe_load(f)
     print(f"Configuration loaded from: {config_path}")
+    validate_config(config)
     return config
   except FileNotFoundError:
     raise FileNotFoundError(f"Configuration file not found: {config_path}")

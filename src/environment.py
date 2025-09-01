@@ -1,7 +1,7 @@
 import gymnasium as gym
 from gymnasium.vector.vector_env import VectorEnv
 from gymnasium.vector import SyncVectorEnv
-from typing import Tuple, Optional, List, Union
+from typing import Tuple, Optional, List
 from collections import deque
 import cv2
 import torch
@@ -89,6 +89,18 @@ class Observation(object):
                     dense=self.dense[i] if self.dense is not None else None)
         for i in range(num_envs)
     ]
+
+  def as_list_input(self, device):
+    """
+    Converts the observation to a list of input tensors for the model.
+
+    Args:
+      device: The device to which the tensors should be moved.
+
+    Returns:
+      A list of tuples containing the frame and dense vector tensors for each environment.
+    """
+    return [obs.as_input(device) for obs in self.as_list()]
 
 
 def merge_observations(observations: List[Observation]) -> Observation:
@@ -433,17 +445,16 @@ class CaptureRenderFrameEnv(gym.vector.VectorWrapper):
   """
   Captures the rendered frame from the environment after each step.
 
-  The rendered frame can be accessed via the `rendered_frame` attribute (H,W,C).
-  Returned observations always have their channel dimension first (C,H,W) to match
-  the expected input format for Conv[2D|3D].
+  The rendered frame can be accessed via the `observation_frame`, attribute in `info`.
 
   config options:
     - mode: str ; "capture" (default) or "replace"
       - "capture": Only captures frame, returns original observation
       - "replace": Returns rendered frame as the observation, ignores original observation
-      - "append": Appends rendered frame to the original observation (not implemented)
     - observation_is_frame: bool ; if True, the observation is expected to be a frame,
       otherwise we call render() on the environment.
+    - capture_num_envs: int ; the number of environments to capture rendered frame for. If not
+      specified, defaults to the number of environments in the vectorized environment.
   """
 
   def __init__(self, env: VectorEnv, config: dict = None) -> None:
@@ -453,6 +464,7 @@ class CaptureRenderFrameEnv(gym.vector.VectorWrapper):
     # as otherwise we show the next frame with the agents action values.
     self.last_rendered_frame: Optional[np.ndarray] = None
     config = config or {}
+    self.capture_num_envs = config.get('capture_num_envs', env.num_envs)
     self.mode = config.get('mode', 'capture')
     self.observation_is_frame = config.get('observation_is_frame', False)
     if self.mode not in ['capture', 'replace']:
@@ -464,12 +476,12 @@ class CaptureRenderFrameEnv(gym.vector.VectorWrapper):
 
     self.last_rendered_frame = self.rendered_frame
     if not self.observation_is_frame:
-      self.rendered_frame = np.array([
-          self.env.unwrapped.envs[i].render() for i in range(self.env.num_envs)
-      ])
+      self.rendered_frame = self.env.unwrapped.render()
+
     else:
       self.rendered_frame = obs.frame
 
+    info['observation_frame'] = self.last_rendered_frame
     if self.mode == 'capture':
       return obs, reward, terminated, truncated, info
     if self.mode == 'replace':
@@ -479,12 +491,11 @@ class CaptureRenderFrameEnv(gym.vector.VectorWrapper):
   def reset(self, **kwargs) -> Tuple[Observation, dict]:
     obs, info = self.env.reset(**kwargs)
     if not self.observation_is_frame:
-      self.rendered_frame = np.array([
-          self.env.unwrapped.envs[i].render() for i in range(self.env.num_envs)
-      ])
+      self.rendered_frame = self.env.unwrapped.render()
     else:
       self.rendered_frame = obs.frame
 
+    info['observation_frame'] = self.rendered_frame
     self.last_rendered_frame = self.rendered_frame
     if self.mode == 'replace':
       # For replace mode, we need to render the initial frame
@@ -563,7 +574,7 @@ class AccumulatedStepsEnv(gym.vector.VectorWrapper):
     return obs, info
 
 
-def create_environment(config: dict) -> gym.Env:
+def create_environment(config: dict, mode: str = 'synchronous') -> gym.Env:
   """ Creates a Gym environment with specified wrappers.
   Args:
     config: Dictionary containing environment configuration.
@@ -571,17 +582,19 @@ def create_environment(config: dict) -> gym.Env:
     A Gym environment instance with the specified wrappers applied.
   """
   num_envs = config.get('num_envs', 1)
-  print(
-      f"Creating environment: {config['env_name']} with {num_envs} environments."
-  )
 
-  # Mario environment needs JoypadSpace which is not vectoriez, so we need to
+  if mode not in ['synchronous', 'asynchronous']:
+    raise ValueError(
+        f"mode must be 'synchronous' or 'asynchronous', received '{mode}'")
+
+  # Mario environment needs JoypadSpace which is not vectorized, so we need to
   # create a SyncVectorEnv.
   if 'SuperMarioBros' not in config['env_name']:
-    env = gym.make_vec(config['env_name'],
-                       num_envs=num_envs,
-                       vectorization_mode="sync",
-                       render_mode="rgb_array")
+    env = gym.make_vec(
+        config['env_name'],
+        num_envs=num_envs,
+        vectorization_mode="sync" if mode == 'synchronous' else "async",
+        render_mode="rgb_array")
   else:
     # Super Mario Bros environment is not compatible with vectorized environments.
     def _create_mario_env():

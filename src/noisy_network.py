@@ -25,12 +25,8 @@ class NoisyLinear(nn.Module):
     # Initialize weights and biases
     self.weight_mu = nn.Parameter(torch.Tensor(out_features, in_features))
     self.weight_sigma = nn.Parameter(torch.Tensor(out_features, in_features))
-    self.bias = nn.Parameter(torch.Tensor(out_features))
+    self.bias_mu = nn.Parameter(torch.Tensor(out_features))
     self.bias_sigma = nn.Parameter(torch.Tensor(out_features))
-    self.register_buffer('weight_epsilon',
-                         torch.Tensor(out_features, in_features))
-    self.register_buffer('bias_epsilon', torch.Tensor(out_features))
-
     self.reset_parameters(std_init)
 
   def reset_parameters(self, std_init):
@@ -38,16 +34,11 @@ class NoisyLinear(nn.Module):
     mu_range = 1 / self.in_features**0.5
     self.weight_mu.data.uniform_(-mu_range, mu_range)
     self.weight_sigma.data.fill_(std_init / self.in_features**0.5)
-    self.bias.data.uniform_(-mu_range, mu_range)
+    self.bias_mu.data.uniform_(-mu_range, mu_range)
     self.bias_sigma.data.fill_(std_init / self.in_features**0.5)
 
   def forward(self, input):
-    if self.training:
-      weight = self.weight_mu + self.weight_sigma * self.weight_epsilon.normal_(
-      )
-      bias = self.bias + self.bias_sigma * self.bias_epsilon.normal_()
-    else:
-      # In eval mode, use deterministic weights
-      weight = self.weight_mu
-      bias = self.bias
+    weight = self.weight_mu + self.weight_sigma * torch.randn_like(
+        self.weight_sigma)
+    bias = self.bias_mu + self.bias_sigma * torch.randn_like(self.bias_sigma)
     return nn.functional.linear(input, weight, bias)

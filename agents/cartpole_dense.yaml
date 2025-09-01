@@ -2,6 +2,9 @@ device: mps
 
 # For reproducibility.
 seed: 42
+render_upscale_factor: 2
+render_layout: [2, 2]
+execution_mode: synchronous  # Options: 'synchronous', 'asynchronous'
 
 env:
   env_name: CartPole-v1
@@ -16,7 +19,6 @@ env:
   env_action_labels: [LEFT, RIGHT]
   num_episodes: 1000
   num_steps: 100000
-  max_steps_per_episode: 500
   headless: false
   num_envs: 4
 
@@ -25,6 +27,8 @@ agent:
   gamma: 0.99
 
   apply_noisy_network: true
+
+  epsilon_min: 0.0
 
   batch_size: 512
   min_memory_size: 512
@@ -51,7 +55,6 @@ agent:
     beta: 0.6 # Importance sampling exponent
     beta_annealing_steps: 20000
 
-  replay_every_n_steps: 1
   replays_until_target_update: 5
   checkpoint_every_n_replays: 10
 

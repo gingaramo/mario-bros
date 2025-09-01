@@ -24,7 +24,6 @@ env:
 
   env_action_labels: [LEFT, RIGHT]
   num_episodes: 8000
-  max_steps_per_episode: 500
   headless: false
   num_envs: 9
 
@@ -62,7 +61,6 @@ agent:
     beta: 0.5
     beta_annealing_steps: 30000
 
-  replay_every_n_steps: 1
   replays_until_target_update: 10
   checkpoint_every_n_replays: 10
 

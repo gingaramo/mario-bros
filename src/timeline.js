@@ -65,15 +65,27 @@ function formatDuration(duration) {
  * @param {number} start - Start time
  * @param {number} end - End time
  * @param {string} color - Event color
+ * @param {Object|null} metadata - Optional metadata object
  */
-function showTooltip(event, eventName, start, end, color) {
+function showTooltip(event, eventName, start, end, color, metadata = null) {
     const tooltip = document.getElementById('tooltip');
     const duration = end - start;
+    
+    let metadataHtml = '';
+    if (metadata && typeof metadata === 'object') {
+        metadataHtml = '<div class="metadata-section">';
+        for (const [key, value] of Object.entries(metadata)) {
+            metadataHtml += `<div class="metadata-item">${key}: ${value}</div>`;
+        }
+        metadataHtml += '</div>';
+    }
+    
     tooltip.innerHTML = `
         <strong>${eventName}</strong><br>
         <div style="color: #a0c4ff;">Start: ${start.toFixed(6)}s</div>
         <div style="color: #a0c4ff;">End: ${end.toFixed(6)}s</div>
         <div style="color: ${color};">Duration: ${formatDuration(duration)}</div>
+        ${metadataHtml}
     `;
     tooltip.style.display = 'block';
     tooltip.style.left = event.pageX + 15 + 'px';
@@ -254,6 +266,7 @@ function createTimeline(containerId) {
             eventData[eventName].forEach(event => {
                 const start = event[0];
                 const end = event[1];
+                const metadata = event.length > 2 ? event[2] : null;
                 const bar = document.createElement('div');
                 bar.className = 'event-bar';
                 
@@ -271,13 +284,13 @@ function createTimeline(containerId) {
                 bar.style.left = `${leftPx}px`;
                 bar.style.width = `${widthPx}px`;
                 
-                // Add tooltip functionality with color
+                // Add tooltip functionality with color and metadata
                 bar.addEventListener('mouseenter', (e) => {
-                    showTooltip(e, eventName, start, end, eventColor);
+                    showTooltip(e, eventName, start, end, eventColor, metadata);
                 });
                 bar.addEventListener('mouseleave', hideTooltip);
                 bar.addEventListener('mousemove', (e) => {
-                    showTooltip(e, eventName, start, end, eventColor);
+                    showTooltip(e, eventName, start, end, eventColor, metadata);
                 });
                 
                 eventBarWrapper.appendChild(bar);

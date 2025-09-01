@@ -3,39 +3,54 @@ Core agent-environment interaction utilities.
 """
 
 import numpy as np
+import torch
+
+from src.agent import Agent
 from .training_utils import record_episode_statistics
 
 
-def execute_agent_step(agent, env, observation):
+def execute_agent_step(action, env_step, observation, summary_writer):
   """
     Execute a single step in the environment with the agent.
     
     Args:
-        agent: The RL agent
-        env: The environment
+        action: The action to take
+        env_step: The environment step function
         observation: Current observation from the environment
+        summary_writer: The summary writer for logging
         
     Returns:
-        tuple: (experience_tuple, action, q_values) where experience_tuple
-               contains (observation, action, reward, next_observation, done, info)
-               
+        tuple: (experience_tuple) where experience_tuple contains
+               (observation, action, reward, next_observation, done, info)
+
     Note:
         This function handles the core agent-environment interaction including
         curiosity rewards if enabled and episode statistics recording.
     """
-  action, q_values = agent.act(observation)
-  next_observation, reward, done, truncated, info = env.step(action)
+  next_observation, reward, done, truncated, info = env_step(action)
 
   # TODO: next_observation will not be the end frame, but the first frame of the
   # next episode when reset happens. We need to pull the frame from 'info'.
-  if agent.curiosity_module:
-    reward += agent.curiosity_reward(observation, next_observation, action,
-                                     agent.device)
+  # TODO: Implement curiosity-driven exploration
+  #if agent.curiosity_module:
+  #  reward += agent.curiosity_reward(observation, next_observation, action,
+  #                                   agent.device)
 
   done_or_truncated = np.logical_or(done, truncated)
 
-  record_episode_statistics(agent, done, truncated, info, env.num_envs)
+  record_episode_statistics(summary_writer, done, truncated, info)
 
-  experience = (observation, action, reward, next_observation,
-                done_or_truncated, info)
-  return experience, action, q_values
+  return (observation, action, reward, next_observation, done_or_truncated,
+          info)
+
+
+def create_agent(config, env, summary_writer):
+  """
+  Create an agent for interacting with the environment.
+  """
+  device = torch.device(config['device'])
+  print(f"Using device: {device}")
+  agent = Agent(env, device, summary_writer, config['agent'])
+  print(f"Model summary: {agent.model}")
+  print(f"Parameters: {sum(p.numel() for p in agent.model.parameters())}")
+  return agent
