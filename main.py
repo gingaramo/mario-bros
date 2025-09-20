@@ -7,6 +7,7 @@ import torch
 
 from src.async_training import run_async_training
 from src.config import load_configuration
+from src.evaluate import evaluate_agent
 from src.profiler import execution_profiler_singleton
 from src.sync_training import run_sync_training
 from src.training_utils import setup_training_environment
@@ -46,6 +47,10 @@ def main(args):
 
   # Launch training based on mode
   execution_mode = config.get('execution_mode', 'synchronous')
+  if args.evaluate_episodes > 0:
+    print(f"Evaluating the agent on {args.evaluate_episodes} episodes.")
+    evaluate_agent(config, args.evaluate_episodes)
+
   if execution_mode == 'synchronous':
     print("Running in synchronous mode.")
     run_sync_training(config)
@@ -76,6 +81,11 @@ def create_argument_parser():
       '--record_play',
       action='store_true',
       help='Record an episode and exit (not currently implemented)')
+
+  parser.add_argument('--evaluate_episodes',
+                      type=int,
+                      default=0,
+                      help='Evaluate the agent on a set of episodes and exit')
 
   parser.add_argument(
       '--restart',

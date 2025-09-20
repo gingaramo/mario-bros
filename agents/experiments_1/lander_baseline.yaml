@@ -1,7 +1,7 @@
 device: mps
 
-# For reproducibility.
 seed: 42
+execution_mode: synchronous
 
 env:
   env_name: "LunarLander-v3"
@@ -13,58 +13,63 @@ env:
     turbulence_power: 1.5
   env_wrappers:
     - CaptureRenderFrameEnv
-    - ReturnActionEnv
+    - PreprocessFrameEnv
     - HistoryEnv
+    #- ReturnActionEnv
+    
   ObservationWrapper:
     input: dense
   CaptureRenderFrameEnv:
-    mode: capture  # Options: 'capture', 'replace'
+    mode: replace  # Options: 'capture', 'replace'
+  PreprocessFrameEnv:
+    resize_shape: [84, 84]
+    grayscale: true
+    normalize: true
   HistoryEnv:
     history_length: 8
+  num_envs: 8
 
   env_action_labels: [NOOP, LEFT, MAIN, RIGHT]
-  num_episodes: 1000
-  num_steps: 200000
-  max_steps_per_episode: 1000
+  num_steps: 5_000_000
   headless: false
-  num_envs: 4
 
 agent:
-  name: lunar_lander_dense
+  name: lander_baseline_frame
   gamma: 0.99
 
-  apply_noisy_network: true
-
-  batch_size: 512
-  min_memory_size: 512
-  loss: huber
-  clip_gradients: 80.0
+  batch_size: 256
+  min_memory_size: 256
+  loss: mse
 
   # Optimizer settings
   optimizer: adam
-  learning_rate: 0.001
+  learning_rate: 0.0001
   lr_scheduler:
     type: lr_scheduler.LinearLR
     args:
       start_factor: 1
       end_factor: 0.2
-      total_iters: 100000
+      total_iters: 100_000
 
   action_selection: max
-  double_dqn: true
+  epsilon: 0.9
+  epsilon_linear_decay: 0.0000005
+  epsilon_min: 0.05
 
   replay_buffer:
-    type: prioritized
-    size: 10000
-    alpha: 0.4 # Bias towards high surprise
-    beta: 0.6 # Importance sampling exponent
-    beta_annealing_steps: 20000
+    type: uniform
+    size: 100_000
 
   replays_until_target_update: 5
   checkpoint_every_n_replays: 100
 
   network:
-    dueling_dqn:
-      value_hidden_layers: [32, 32]
-      advantage_hidden_layers: [32, 32]
+    dqn:
+      convolution:
+        type: 2d
+        kernel_sizes: [8, 4, 3]
+        channels: [32, 64, 64]
+        strides: [4, 2, 1]
+
+      hidden_layers: [256, 128, 64]
 

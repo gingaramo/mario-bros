@@ -1,0 +1,74 @@
+device: mps
+
+seed: 42
+execution_mode: synchronous
+
+env:
+  env_name: "LunarLander-v3"
+  env_kwargs:
+    continuous: False
+    gravity: -10.0
+    enable_wind: False
+    wind_power: 15.0
+    turbulence_power: 1.5
+  env_wrappers:
+    - CaptureRenderFrameEnv
+    - PreprocessFrameEnv
+    - HistoryEnv
+    - ReturnActionEnv
+  ObservationWrapper:
+    input: dense
+  CaptureRenderFrameEnv:
+    mode: replace  # Options: 'capture', 'replace'
+  PreprocessFrameEnv:
+    resize_shape: [84, 84]
+    grayscale: true
+    normalize: true
+  HistoryEnv:
+    history_length: 8
+  num_envs: 8
+
+  env_action_labels: [NOOP, LEFT, MAIN, RIGHT]
+  num_steps: 5_000_000
+  headless: true
+
+agent:
+  name: lander_prev_action_frame
+  gamma: 0.99
+
+  batch_size: 256
+  min_memory_size: 256
+  loss: mse
+
+  # Optimizer settings
+  optimizer: adam
+  learning_rate: 0.0001
+  lr_scheduler:
+    type: lr_scheduler.LinearLR
+    args:
+      start_factor: 1
+      end_factor: 0.2
+      total_iters: 100_000
+
+  action_selection: max
+  epsilon: 0.9
+  epsilon_linear_decay: 0.0000005
+  epsilon_min: 0.05
+
+  replay_buffer:
+    type: uniform
+    size: 100_000
+
+  replays_until_target_update: 5
+  checkpoint_every_n_replays: 100
+
+  network:
+    dqn:
+      convolution:
+        type: 2d
+        kernel_sizes: [8, 4, 3]
+        channels: [32, 64, 64]
+        strides: [4, 2, 1]
+
+      hidden_layers: [256, 128, 64]
+

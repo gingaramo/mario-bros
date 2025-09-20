@@ -170,20 +170,19 @@ class TestUniformReplayBuffer(unittest.TestCase):
     for reward in all_rewards:
       self.assertIn(reward.item(), [float(i) for i in range(10)])
 
-  def test_insufficient_samples_error(self):
-    """Test that sampling raises error when buffer has insufficient experiences."""
+  def test_sample_with_repeats_when_insufficient(self):
+    """Test that sampling with repeats works when buffer has insufficient experiences."""
     # Add only 2 experiences
     for i in range(2):
       obs = self._create_mock_observation_tensors()[0]
       next_obs = self._create_mock_observation_tensors()[0]
       self.replay_buffer.append(obs, i, 1.0, next_obs, False)
 
-    # Try to sample more than available
-    with self.assertRaises(ValueError) as context:
-      self.replay_buffer.sample(5)
-
-    self.assertIn("Cannot sample 5 from buffer of size 2",
-                  str(context.exception))
+    # Try to sample more than available (should allow repeats, no error)
+    all_obs, all_actions, all_rewards, all_next_obs, all_done = self.replay_buffer.sample(5)
+    # All actions should be from our original set (0, 1)
+    for action in all_actions:
+      self.assertIn(action.item(), [0, 1])
 
   def test_training_scenario_with_consistent_observations(self):
     """Test realistic training scenario with consistent observation types and various rewards/actions."""
@@ -381,23 +380,20 @@ class TestPrioritizedReplayBuffer(unittest.TestCase):
     self.assertNotEqual(initial_surprises, current_surprises)
 
   def test_prioritized_error_handling(self):
-    """Test error handling for insufficient samples."""
+    """Test that prioritized buffer allows sampling with repeats when insufficient experiences (legacy test, now expects no error)."""
     # Add only 2 experiences
     for i in range(2):
       obs = self._create_mock_observation_tensors()[0]
       next_obs = self._create_mock_observation_tensors()[0]
-
       self.mock_target_callback.return_value = torch.tensor([1.0])
       self.mock_prediction_callback.return_value = torch.tensor([0.5])
-
       self.replay_buffer.append(obs, i, 1.0, next_obs, False)
 
-    # Try to sample more than available
-    with self.assertRaises(ValueError) as context:
-      self.replay_buffer.sample(5)
-
-    self.assertIn("Cannot sample 5 from buffer of size 2",
-                  str(context.exception))
+    # Try to sample more than available (should allow repeats, no error)
+    (all_obs, all_actions, all_rewards, all_next_obs, all_done), importance_sampling, indices = self.replay_buffer.sample(5)
+    # All actions should be from our original set (0, 1)
+    for action in all_actions:
+      self.assertIn(action.item(), [0, 1])
 
   def test_zero_surprise_handling(self):
     """Test that prioritized buffer handles experiences with zero surprise correctly."""

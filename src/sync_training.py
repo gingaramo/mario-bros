@@ -27,7 +27,7 @@ def run_sync_training(config):
         slower than async mode since environment stepping blocks training.
     """
   # Create environment, summary writer, and agent
-  env = create_environment(config['env'])
+  env = create_environment(config['env'], 'asynchronous')
   summary_writer = create_summary_writer(config)
   agent = create_agent(config, env, summary_writer)
 

@@ -43,7 +43,7 @@ class MockVectorEnv(VectorEnv):
 
   def step(
       self, actions: np.ndarray
-  ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, list]:
+  ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, dict]:
     self.step_count += 1
     # Return vectorized observations
     frames = np.random.randint(0,
@@ -52,15 +52,17 @@ class MockVectorEnv(VectorEnv):
     rewards = np.ones(self.num_envs, dtype=np.float32)
     terminated = self.step_count >= self.max_steps
     truncated = np.zeros(self.num_envs, dtype=bool)
-    infos = [{'step': int(self.step_count[i])} for i in range(self.num_envs)]
+    # For vectorized environments, info should be a dict with lists/arrays as values
+    infos = {'step': self.step_count.copy()}
     return frames, rewards, terminated, truncated, infos
 
-  def reset(self, **kwargs) -> Tuple[np.ndarray, list]:
+  def reset(self, **kwargs) -> Tuple[np.ndarray, dict]:
     self.step_count = np.zeros(self.num_envs)
     frames = np.random.randint(0,
                                256, (self.num_envs, ) + self.frame_shape,
                                dtype=np.uint8)
-    infos = [{'episode': 1} for _ in range(self.num_envs)]
+    # For vectorized environments, info should be a dict with lists/arrays as values
+    infos = {'episode': np.ones(self.num_envs, dtype=int)}
     return frames, infos
 
   def close(self):
@@ -531,9 +533,9 @@ class TestReturnActionEnv(unittest.TestCase):
     self.assertEqual(obs.dense.shape, (1, 1))  # Vectorized: (num_envs, 1)
     self.assertEqual(obs.dense[0][0],
                      0)  # No previous action in vectorized format
-    self.assertIsInstance(info, list)
-    self.assertEqual(len(info), 1)
-    self.assertIsInstance(info[0], dict)
+    self.assertIsInstance(info, dict)
+    self.assertIn('episode', info)
+    self.assertEqual(len(info['episode']), 1)  # One environment
 
   def test_reset_with_existing_dense_vector(self):
     """Test reset when base environment already provides dense vector."""
@@ -747,9 +749,9 @@ class TestHistoryEnv(unittest.TestCase):
     self.assertEqual(len(env.states[0]),
                      1)  # Only reset observation in first environment's deque
     self.assertIsInstance(
-        info, list)  # Vectorized environments return list of info dicts
-    self.assertEqual(len(info), 1)
-    self.assertIsInstance(info[0], dict)
+        info, dict)  # Vectorized environments return dict with array values
+    self.assertIn('episode', info)
+    self.assertEqual(len(info['episode']), 1)  # One environment
     # Check that step_count was reset on the underlying MockVectorEnv
     np.testing.assert_array_equal(self.base_env.env.step_count, [0])
 
@@ -947,6 +949,9 @@ class MockVectorRenderEnv(MockVectorEnv):
 
   def render(self, mode='rgb_array'):
     self.render_called = True
+    # Also call render on individual environments to set their render_called flags
+    for env in self.envs:
+      env.render(mode)
     return self.render_return
 
 
@@ -993,7 +998,10 @@ class TestCaptureRenderFrameEnv(unittest.TestCase):
 
   def test_step_capture_mode(self):
     """Test step with capture mode (default behavior)."""
-    env = CaptureRenderFrameEnv(self.base_env, {'mode': 'capture'})
+    env = CaptureRenderFrameEnv(self.base_env, {
+        'mode': 'capture',
+        'observation_is_frame': False
+    })
     obs, reward, terminated, truncated, info = env.step(
         [0])  # Vectorized action
 
@@ -1016,7 +1024,10 @@ class TestCaptureRenderFrameEnv(unittest.TestCase):
 
   def test_step_replace_mode(self):
     """Test step with replace mode."""
-    env = CaptureRenderFrameEnv(self.base_env, {'mode': 'replace'})
+    env = CaptureRenderFrameEnv(self.base_env, {
+        'mode': 'replace',
+        'observation_is_frame': False
+    })
     obs, reward, terminated, truncated, info = env.step(
         [0])  # Vectorized action
 
@@ -1052,9 +1063,9 @@ class TestCaptureRenderFrameEnv(unittest.TestCase):
                       self.base_env.unwrapped.envs[0].frame_shape[1],
                       self.base_env.unwrapped.envs[0].frame_shape[2])
     self.assertEqual(obs.frame.shape, expected_shape)
-    self.assertIsInstance(info, list)
-    self.assertEqual(len(info), 1)
-    self.assertIsInstance(info[0], dict)
+    self.assertIsInstance(info, dict)
+    self.assertIn('episode', info)
+    self.assertIn('observation_frame', info)
 
   def test_reset_replace_mode(self):
     """Test reset with replace mode."""
@@ -1073,9 +1084,9 @@ class TestCaptureRenderFrameEnv(unittest.TestCase):
     np.testing.assert_array_equal(obs.frame[0],
                                   self.base_env.unwrapped.envs[0].render_return
                                   )  # Compare single env frame
-    self.assertIsInstance(info, list)
-    self.assertEqual(len(info), 1)
-    self.assertIsInstance(info[0], dict)
+    self.assertIsInstance(info, dict)
+    self.assertIn('episode', info)
+    self.assertIn('observation_frame', info)
 
   def test_channel_dimension_conversion(self):
     """Test that frames are correctly converted from (H,W,C) to (C,H,W)."""

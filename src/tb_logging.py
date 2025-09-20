@@ -33,3 +33,21 @@ class CustomSummaryWriter(SummaryWriter):
   def set_global_step(self, global_step):
     """Set the global step for logging."""
     self.global_step = global_step
+
+
+class DummySummaryWriter(CustomSummaryWriter):
+  """
+  A dummy summary writer that does not log anything.
+  """
+
+  def __init__(self, *args, **kwargs):
+    pass
+
+  def add_scalar(self, tag, scalar_value):
+    pass
+
+  def add_histogram(self, tag, values):
+    pass
+
+  def set_global_step(self, global_step):
+    pass

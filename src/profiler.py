@@ -76,3 +76,20 @@ class ProfileScope:
     from time import time
     end_time = time()
     self.profiler.record(self.name, self.start_time, end_time, self.metadata)
+
+
+class ProfileLockScope(ProfileScope):
+
+  def __init__(self, name, lock, profiler=execution_profiler_singleton):
+    super().__init__(name, profiler)
+    self.lock = lock
+
+  def __enter__(self):
+    with ProfileScope(self.name + '_lock'):
+      self.lock.acquire()
+    super().__enter__()
+    return self
+
+  def __exit__(self, exc_type, exc_value, traceback):
+    self.lock.release()
+    super().__exit__(exc_type, exc_value, traceback)

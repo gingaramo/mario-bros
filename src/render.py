@@ -170,22 +170,15 @@ def frame_with_q_values(next_state, q_values, action, labels, upscale_factor):
   return frame_with_q
 
 
-def render(env, q_values, action, config, recording=None):
+def render(info, q_values, action, config, recording=None):
   labels = config['env']['env_action_labels']
   upscale_factor = config.get('render_upscale_factor', 1)
   layout = config.get('render_layout', None)
   if not should_render() and not recording:
     return
 
-  def find_rendered_frame(env):
-    if hasattr(env, 'last_rendered_frame'):
-      return env.last_rendered_frame
-    elif hasattr(env, 'env'):
-      return find_rendered_frame(env.env)
-    else:
-      raise ValueError("Environment does not have a rendered frame.")
-
-  frame = find_rendered_frame(env)
+  assert 'observation_frame' in info, "Missing observation frame in info"
+  frame = info['observation_frame']
   # Take the first environment's data, for now. Might be good to render all.
 
   frames = []

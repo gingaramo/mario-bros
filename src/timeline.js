@@ -4,6 +4,18 @@ let currentZoom = 1;
 let minTime = Infinity;
 let maxTime = -Infinity;
 
+// Optimization variables
+let virtualizedLanes = [];
+let visibleLanes = new Set();
+let renderAnimationFrame = null;
+
+// UI state variables
+let isResizing = false;
+let currentResizeElement = null;
+let startX = 0;
+let startWidth = 0;
+let hiddenLanes = new Set();
+
 // TensorBoard-inspired color palette
 const colorPalette = [
     '#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FECA57',
@@ -21,6 +33,12 @@ const colorPalette = [
 function initializeTimeline(timelineData) {
     data = timelineData;
     createTimeline('timeline-app');
+    
+    // Remove loading class to enable scrolling
+    const timelineWrapper = document.querySelector('.timeline-wrapper');
+    if (timelineWrapper) {
+        timelineWrapper.classList.remove('loading');
+    }
 }
 
 /**
@@ -108,36 +126,53 @@ function updateZoomLevel() {
 }
 
 /**
- * Update all event bars based on current zoom level
+ * Update all event bars based on current zoom level with performance optimizations
  */
 function updateEventBars() {
-    const duration = maxTime - minTime;
-    const baseWidth = 1000; // Base width for timeline
-    const scaledWidth = baseWidth * currentZoom;
+    // Use requestAnimationFrame for smooth updates
+    if (renderAnimationFrame) {
+        cancelAnimationFrame(renderAnimationFrame);
+    }
     
-    // Update the timeline content container
-    const timelineContent = document.getElementById('timeline-app');
-    timelineContent.style.minWidth = `${scaledWidth + 250}px`; // Add extra space for labels
-    
-    // Update all event bar wrappers
-    const eventBarWrappers = document.querySelectorAll('.event-bar-wrapper');
-    eventBarWrappers.forEach(wrapper => {
-        wrapper.style.width = `${scaledWidth}px`;
-        wrapper.style.minWidth = `${scaledWidth}px`;
-    });
+    renderAnimationFrame = requestAnimationFrame(() => {
+        const duration = maxTime - minTime;
+        const baseWidth = 1000;
+        const scaledWidth = baseWidth * currentZoom;
+        
+        // Update the timeline content container
+        const timelineContent = document.getElementById('timeline-app');
+        timelineContent.style.minWidth = `${scaledWidth + 250}px`;
+        
+        // Update all event bar wrappers
+        const eventBarWrappers = document.querySelectorAll('.event-bar-wrapper');
+        eventBarWrappers.forEach(wrapper => {
+            wrapper.style.width = `${scaledWidth}px`;
+            wrapper.style.minWidth = `${scaledWidth}px`;
+        });
 
-    // Update all event bars positioning and sizing using absolute positions
-    const eventBars = document.querySelectorAll('.event-bar');
-    eventBars.forEach(bar => {
-        const start = parseFloat(bar.dataset.start);
-        const end = parseFloat(bar.dataset.end);
+        // Batch update visible event bars
+        const eventBars = document.querySelectorAll('.event-bar');
+        const fragment = document.createDocumentFragment();
+        const barsToUpdate = [];
         
-        // Calculate absolute positions within the scaled container
-        const leftPx = ((start - minTime) / duration) * scaledWidth;
-        const widthPx = ((end - start) / duration) * scaledWidth;
+        eventBars.forEach(bar => {
+            const start = parseFloat(bar.dataset.start);
+            const end = parseFloat(bar.dataset.end);
+            
+            // Calculate positions
+            const leftPx = ((start - minTime) / duration) * scaledWidth;
+            const widthPx = Math.max(((end - start) / duration) * scaledWidth, 0.5);
+            
+            barsToUpdate.push({ bar, leftPx, widthPx });
+        });
         
-        bar.style.left = `${leftPx}px`;
-        bar.style.width = `${Math.max(widthPx, 1)}px`; // Ensure minimum width
+        // Apply updates in batches to minimize reflow
+        barsToUpdate.forEach(({ bar, leftPx, widthPx }) => {
+            bar.style.left = `${leftPx}px`;
+            bar.style.width = `${widthPx}px`;
+        });
+        
+        renderAnimationFrame = null;
     });
 }
 
@@ -215,11 +250,221 @@ function handleWheelZoom(event) {
 }
 
 /**
- * Create the timeline visualization
+ * Debounce function to limit function calls
+ * @param {Function} func - Function to debounce
+ * @param {number} delay - Delay in milliseconds
+ * @returns {Function} - Debounced function
+ */
+function debounce(func, delay) {
+    let timeoutId;
+    return function(...args) {
+        clearTimeout(timeoutId);
+        timeoutId = setTimeout(() => func.apply(this, args), delay);
+    };
+}
+
+/**
+ * Throttle function to limit function calls
+ * @param {Function} func - Function to throttle
+ * @param {number} delay - Delay in milliseconds
+ * @returns {Function} - Throttled function
+ */
+function throttle(func, delay) {
+    let timeoutId;
+    let lastExecTime = 0;
+    return function(...args) {
+        const currentTime = Date.now();
+        if (currentTime - lastExecTime > delay) {
+            func.apply(this, args);
+            lastExecTime = currentTime;
+        } else {
+            clearTimeout(timeoutId);
+            timeoutId = setTimeout(() => {
+                func.apply(this, args);
+                lastExecTime = Date.now();
+            }, delay - (currentTime - lastExecTime));
+        }
+    };
+}
+
+/**
+ * Create a virtualized event lane for better performance
+ * @param {Object} laneData - Lane configuration
+ * @returns {HTMLElement} - The created lane element
+ */
+function createVirtualizedLane(laneData) {
+    const { eventName, events, eventColor, duration, profileName } = laneData;
+    
+    const eventLane = document.createElement('div');
+    eventLane.className = 'event-lane';
+    eventLane.dataset.profileName = profileName;
+    eventLane.dataset.eventName = eventName;
+    
+    const eventNameLabel = document.createElement('div');
+    eventNameLabel.className = 'event-name';
+    eventNameLabel.textContent = eventName;
+    eventNameLabel.style.borderLeft = `4px solid ${eventColor}`;
+    
+    // Add title attribute for tooltip if name is long (adjusted for 250px width)
+    if (eventName.length > 30) {
+        eventNameLabel.setAttribute('title', eventName);
+    }
+    
+    // Add click handler for hide/move functionality
+    eventNameLabel.addEventListener('click', (e) => {
+        handleEventNameClick(eventLane, eventName, e);
+    });
+    
+    // Add resize functionality
+    eventNameLabel.addEventListener('mousedown', (e) => {
+        handleResizeStart(e, eventNameLabel);
+    });
+    
+    eventLane.appendChild(eventNameLabel);
+    
+    const eventBarContainer = document.createElement('div');
+    eventBarContainer.className = 'event-bar-container';
+
+    const eventBarWrapper = document.createElement('div');
+    eventBarWrapper.className = 'event-bar-wrapper';
+    eventBarWrapper.dataset.eventCount = events.length;
+
+    // Only render events that are visible or significant
+    const significantEvents = filterSignificantEvents(events, duration);
+    
+    significantEvents.forEach(event => {
+        const bar = createEventBar(event, eventColor, eventName, duration);
+        eventBarWrapper.appendChild(bar);
+    });
+    
+    eventBarContainer.appendChild(eventBarWrapper);
+    eventLane.appendChild(eventBarContainer);
+    
+    return eventLane;
+}
+
+/**
+ * Filter events to only show significant ones at current zoom level
+ * @param {Array} events - Array of events
+ * @param {number} duration - Total timeline duration
+ * @returns {Array} - Filtered events
+ */
+function filterSignificantEvents(events, duration) {
+    const baseWidth = 1000;
+    const scaledWidth = baseWidth * currentZoom;
+    const minVisibleWidth = 1; // Minimum width in pixels to be visible
+    const minDurationToShow = (minVisibleWidth / scaledWidth) * duration;
+    
+    // If zoomed out significantly, merge nearby events
+    if (currentZoom < 0.5) {
+        return mergeNearbyEvents(events, duration);
+    }
+    
+    // Filter out events that are too small to see
+    return events.filter(event => {
+        const eventDuration = event[1] - event[0];
+        return eventDuration >= minDurationToShow;
+    });
+}
+
+/**
+ * Merge nearby events when zoomed out for better performance
+ * @param {Array} events - Array of events
+ * @param {number} duration - Total timeline duration
+ * @returns {Array} - Merged events
+ */
+function mergeNearbyEvents(events, duration) {
+    if (events.length === 0) return events;
+    
+    const baseWidth = 1000;
+    const scaledWidth = baseWidth * currentZoom;
+    const mergeThreshold = (5 / scaledWidth) * duration; // 5 pixels
+    
+    const merged = [];
+    let currentGroup = [events[0]];
+    
+    for (let i = 1; i < events.length; i++) {
+        const prevEvent = currentGroup[currentGroup.length - 1];
+        const currentEvent = events[i];
+        
+        if (currentEvent[0] - prevEvent[1] <= mergeThreshold) {
+            currentGroup.push(currentEvent);
+        } else {
+            // Merge the current group
+            if (currentGroup.length === 1) {
+                merged.push(currentGroup[0]);
+            } else {
+                const mergedEvent = [
+                    currentGroup[0][0], // Start of first event
+                    currentGroup[currentGroup.length - 1][1], // End of last event
+                    { merged: currentGroup.length } // Metadata indicating merge
+                ];
+                merged.push(mergedEvent);
+            }
+            currentGroup = [currentEvent];
+        }
+    }
+    
+    // Handle the last group
+    if (currentGroup.length === 1) {
+        merged.push(currentGroup[0]);
+    } else {
+        const mergedEvent = [
+            currentGroup[0][0],
+            currentGroup[currentGroup.length - 1][1],
+            { merged: currentGroup.length }
+        ];
+        merged.push(mergedEvent);
+    }
+    
+    return merged;
+}
+
+/**
+ * Create an individual event bar
+ * @param {Array} event - Event data
+ * @param {string} eventColor - Color for the event
+ * @param {string} eventName - Name of the event
+ * @param {number} duration - Total timeline duration
+ * @returns {HTMLElement} - The created event bar
+ */
+function createEventBar(event, eventColor, eventName, duration) {
+    const start = event[0];
+    const end = event[1];
+    const metadata = event.length > 2 ? event[2] : null;
+    
+    const bar = document.createElement('div');
+    bar.className = 'event-bar';
+    bar.style.backgroundColor = eventColor;
+    bar.dataset.start = start;
+    bar.dataset.end = end;
+    
+    // Initial positioning
+    const baseWidth = 1000;
+    const leftPx = ((start - minTime) / duration) * baseWidth;
+    const widthPx = Math.max(((end - start) / duration) * baseWidth, 0.5);
+    bar.style.left = `${leftPx}px`;
+    bar.style.width = `${widthPx}px`;
+    
+    // Use throttled tooltip handlers
+    const throttledShowTooltip = throttle((e) => {
+        showTooltip(e, eventName, start, end, eventColor, metadata);
+    }, 16); // ~60fps
+    
+    bar.addEventListener('mouseenter', throttledShowTooltip);
+    bar.addEventListener('mouseleave', hideTooltip);
+    bar.addEventListener('mousemove', throttledShowTooltip);
+    
+    return bar;
+}
+
+/**
+ * Create the timeline visualization with performance optimizations
  * @param {string} containerId - ID of the container element
  */
 function createTimeline(containerId) {
     const container = document.getElementById(containerId);
+    container.innerHTML = ''; // Clear existing content
 
     // Find global min and max times to set the timeline scale
     for (const profileName in data) {
@@ -232,79 +477,257 @@ function createTimeline(containerId) {
     }
     
     const duration = maxTime - minTime;
+    console.log(`Timeline duration: ${duration.toFixed(3)}s (${minTime.toFixed(3)}s - ${maxTime.toFixed(3)}s)`);
+
+    // Create a document fragment for batch DOM operations
+    const fragment = document.createDocumentFragment();
 
     for (const profileName in data) {
         const profileContainer = document.createElement('div');
         profileContainer.className = 'timeline-container';
         
         const profileTitle = document.createElement('h3');
-        profileTitle.textContent = profileName;
+        profileTitle.textContent = `${profileName} (${Object.keys(data[profileName]).length} events)`;
         profileContainer.appendChild(profileTitle);
         
         const eventData = data[profileName];
         const sortedEventNames = Object.keys(eventData).sort();
 
+        // Create lanes using virtualization
         sortedEventNames.forEach((eventName, eventIndex) => {
             const eventColor = getEventColor(eventName, eventIndex);
+            const events = eventData[eventName];
             
-            const eventLane = document.createElement('div');
-            eventLane.className = 'event-lane';
+            const laneData = {
+                eventName,
+                events,
+                eventColor,
+                duration,
+                profileName
+            };
             
-            const eventNameLabel = document.createElement('div');
-            eventNameLabel.className = 'event-name';
-            eventNameLabel.textContent = eventName;
-            // Add a colored indicator next to the event name
-            eventNameLabel.style.borderLeft = `4px solid ${eventColor}`;
-            eventLane.appendChild(eventNameLabel);
-            
-            const eventBarContainer = document.createElement('div');
-            eventBarContainer.className = 'event-bar-container';
-
-            const eventBarWrapper = document.createElement('div');
-            eventBarWrapper.className = 'event-bar-wrapper';
-
-            eventData[eventName].forEach(event => {
-                const start = event[0];
-                const end = event[1];
-                const metadata = event.length > 2 ? event[2] : null;
-                const bar = document.createElement('div');
-                bar.className = 'event-bar';
-                
-                // Apply the color to this event bar
-                bar.style.backgroundColor = eventColor;
-                
-                // Store start and end times as data attributes for zoom calculations
-                bar.dataset.start = start;
-                bar.dataset.end = end;
-                
-                // Initial positioning using pixels instead of percentages
-                const baseWidth = 1000;
-                const leftPx = ((start - minTime) / duration) * baseWidth;
-                const widthPx = ((end - start) / duration) * baseWidth;
-                bar.style.left = `${leftPx}px`;
-                bar.style.width = `${widthPx}px`;
-                
-                // Add tooltip functionality with color and metadata
-                bar.addEventListener('mouseenter', (e) => {
-                    showTooltip(e, eventName, start, end, eventColor, metadata);
-                });
-                bar.addEventListener('mouseleave', hideTooltip);
-                bar.addEventListener('mousemove', (e) => {
-                    showTooltip(e, eventName, start, end, eventColor, metadata);
-                });
-                
-                eventBarWrapper.appendChild(bar);
+            const lane = createVirtualizedLane(laneData);
+            virtualizedLanes.push({
+                element: lane,
+                data: laneData,
+                visible: true
             });
             
-            eventBarContainer.appendChild(eventBarWrapper);
-            eventLane.appendChild(eventBarContainer);
-            profileContainer.appendChild(eventLane);
+            profileContainer.appendChild(lane);
         });
         
-        container.appendChild(profileContainer);
+        fragment.appendChild(profileContainer);
     }
     
-    // Add wheel event listener to the timeline wrapper for zoom functionality
+    // Batch DOM update
+    container.appendChild(fragment);
+    
+    // Add optimized wheel event listener
     const timelineWrapper = document.querySelector('.timeline-wrapper');
-    timelineWrapper.addEventListener('wheel', handleWheelZoom);
+    const throttledWheelZoom = throttle(handleWheelZoom, 16);
+    timelineWrapper.addEventListener('wheel', throttledWheelZoom, { passive: false });
+    
+    // Add intersection observer for viewport culling
+    setupViewportCulling();
+    
+    console.log(`Timeline created with ${virtualizedLanes.length} lanes, ${getTotalEventCount()} total events`);
 }
+
+/**
+ * Get total event count across all lanes
+ * @returns {number} Total number of events
+ */
+function getTotalEventCount() {
+    return virtualizedLanes.reduce((total, lane) => {
+        return total + lane.data.events.length;
+    }, 0);
+}
+
+/**
+ * Setup viewport culling to hide lanes that are not visible
+ */
+function setupViewportCulling() {
+    if (!window.IntersectionObserver) {
+        console.log('IntersectionObserver not supported, skipping viewport culling');
+        return;
+    }
+    
+    const observer = new IntersectionObserver((entries) => {
+        entries.forEach(entry => {
+            const lane = virtualizedLanes.find(l => l.element === entry.target);
+            if (lane) {
+                const wasVisible = lane.visible;
+                lane.visible = entry.isIntersecting;
+                
+                // Only update if visibility changed
+                if (wasVisible !== lane.visible) {
+                    const eventBars = lane.element.querySelectorAll('.event-bar');
+                    eventBars.forEach(bar => {
+                        bar.style.display = lane.visible ? 'block' : 'none';
+                    });
+                }
+            }
+        });
+    }, {
+        root: document.querySelector('.timeline-wrapper'),
+        rootMargin: '50px 0px', // Load lanes 50px before they come into view
+        threshold: 0
+    });
+    
+    // Observe all lanes
+    virtualizedLanes.forEach(lane => {
+        observer.observe(lane.element);
+    });
+}
+
+/**
+ * Handle event name click for hide/show functionality
+ * @param {HTMLElement} eventLane - The event lane element
+ * @param {string} eventName - Name of the event
+ * @param {Event} event - The click event
+ */
+function handleEventNameClick(eventLane, eventName, event) {
+    // Check if this is a resize action (near right edge)
+    const rect = event.target.getBoundingClientRect();
+    const clickX = event.clientX - rect.left;
+    const isNearRightEdge = clickX > rect.width - 10;
+    
+    if (isNearRightEdge) {
+        return; // Don't handle click if it's a resize action
+    }
+    
+    const laneId = `${eventLane.dataset.profileName}_${eventName}`;
+    
+    // Simple toggle between normal and hidden
+    if (eventLane.classList.contains('hidden')) {
+        // Restore from hidden to normal
+        hiddenLanes.delete(laneId);
+        eventLane.classList.remove('hidden');
+        console.log(`Restored lane: ${eventName}`);
+    } else {
+        // Hide the lane
+        hiddenLanes.add(laneId);
+        eventLane.classList.add('hidden');
+        console.log(`Hidden lane: ${eventName}`);
+    }
+    
+    updateLaneStatusDisplay();
+}
+
+/**
+ * Handle resize start
+ * @param {Event} event - The mousedown event
+ * @param {HTMLElement} element - The event name element
+ */
+function handleResizeStart(event, element) {
+    const rect = element.getBoundingClientRect();
+    const clickX = event.clientX - rect.left;
+    const isNearRightEdge = clickX > rect.width - 10;
+    
+    if (!isNearRightEdge) {
+        return; // Only start resize if near right edge
+    }
+    
+    event.preventDefault();
+    isResizing = true;
+    currentResizeElement = element;
+    startX = event.clientX;
+    startWidth = element.offsetWidth;
+    
+    document.addEventListener('mousemove', handleResize);
+    document.addEventListener('mouseup', handleResizeEnd);
+    document.body.style.cursor = 'col-resize';
+}
+
+/**
+ * Handle resize during drag
+ * @param {Event} event - The mousemove event
+ */
+function handleResize(event) {
+    if (!isResizing || !currentResizeElement) return;
+    
+    const deltaX = event.clientX - startX;
+    const newWidth = Math.max(150, Math.min(600, startWidth + deltaX));
+    
+    // Update all event name elements to maintain alignment
+    const allEventNames = document.querySelectorAll('.event-name');
+    allEventNames.forEach(el => {
+        el.style.width = `${newWidth}px`;
+    });
+}
+
+/**
+ * Handle resize end
+ */
+function handleResizeEnd() {
+    isResizing = false;
+    currentResizeElement = null;
+    document.removeEventListener('mousemove', handleResize);
+    document.removeEventListener('mouseup', handleResizeEnd);
+    document.body.style.cursor = '';
+}
+
+/**
+ * Update lane status display in the controls
+ */
+function updateLaneStatusDisplay() {
+    const hiddenCount = hiddenLanes.size;
+    
+    // Add or update status display
+    let statusElement = document.getElementById('lane-status');
+    if (!statusElement) {
+        statusElement = document.createElement('div');
+        statusElement.id = 'lane-status';
+        statusElement.style.cssText = `
+            margin-left: 15px;
+            padding: 4px 8px;
+            background: #fff3cd;
+            border: 1px solid #ffeaa7;
+            border-radius: 4px;
+            font-size: 0.8em;
+            color: #856404;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        `;
+        document.querySelector('.zoom-controls').appendChild(statusElement);
+    }
+    
+    if (hiddenCount > 0) {
+        statusElement.innerHTML = `
+            <span>Hidden lanes: ${hiddenCount}</span>
+            <button onclick="restoreAllLanes()" style="
+                background: #856404;
+                color: white;
+                border: none;
+                padding: 2px 6px;
+                border-radius: 3px;
+                font-size: 0.9em;
+                cursor: pointer;
+            ">Restore All</button>
+        `;
+        statusElement.style.display = 'inline-flex';
+    } else {
+        statusElement.style.display = 'none';
+    }
+}
+
+/**
+ * Restore all hidden lanes to their original positions
+ */
+function restoreAllLanes() {
+    // Get all lanes
+    const allLanes = document.querySelectorAll('.event-lane');
+    
+    allLanes.forEach(lane => {
+        lane.classList.remove('hidden');
+    });
+    
+    // Clear the state set
+    hiddenLanes.clear();
+    
+    updateLaneStatusDisplay();
+}
+
+// Make restoreAllLanes available globally for the button onclick
+window.restoreAllLanes = restoreAllLanes;

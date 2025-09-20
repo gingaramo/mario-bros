@@ -158,9 +158,7 @@ class UniformExperienceReplayBuffer(ReplayBuffer):
   """A simple replay buffer that samples uniformly from the buffer."""
 
   def sample(self, batch_size):
-    if len(self) < batch_size:
-      raise ValueError(
-          f"Cannot sample {batch_size} from buffer of size {len(self)}")
+
 
     minibatch = random.choices(self.buffer, k=batch_size)
 
@@ -221,9 +219,6 @@ class PrioritizedExperienceReplayBuffer(ReplayBuffer):
     return (np.abs(deltas) + self.eps)**self.alpha
 
   def sample(self, batch_size):
-    if len(self) < batch_size:
-      raise ValueError(
-          f"Cannot sample {batch_size} from buffer of size {len(self)}")
     # Since we're sampling we count this as an annealing step.
     self.annealing_steps_taken += 1
     self.summary_writer.add_scalar('ReplayBuffer/Alpha', self.alpha)

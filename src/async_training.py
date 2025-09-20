@@ -7,6 +7,8 @@ import time
 import threading
 from tqdm import tqdm
 
+from src.agent import Agent
+
 from .environment import create_environment
 from .render import render
 from .keyboard_controls import wait_for_frame_step
@@ -77,7 +79,7 @@ def async_worker_thread(config, agent, worker_id=0):
   pbar.close()
 
 
-def async_trainer_thread(config, agent, stop_event):
+def async_trainer_thread(config, agent: Agent, stop_event):
   """
     Main function for the async trainer process that handles model training.
     
@@ -106,7 +108,7 @@ def async_trainer_thread(config, agent, stop_event):
         pbar.update(config['agent']['batch_size'])
       else:
         # We have not yet accumulated enough experiences.
-        time.sleep(1)
+        time.sleep(0.001)
 
 
 def validate_config(config):

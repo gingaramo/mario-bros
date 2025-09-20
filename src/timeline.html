@@ -5,6 +5,35 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Training Mario Profile Timeline Visualization</title>
     <link rel="stylesheet" href="timeline.css">
+    <!-- Performance optimizations -->
+    <meta name="color-scheme" content="light">
+    <style>
+        /* Critical CSS for initial render */
+        .timeline-wrapper.loading {
+            overflow: hidden; /* Only prevent layout shift during loading */
+        }
+        
+        /* Loading state */
+        .loading {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 200px;
+            color: #667eea;
+            font-weight: 600;
+        }
+        
+        .loading::after {
+            content: '...';
+            animation: dots 1.5s infinite;
+        }
+        
+        @keyframes dots {
+            0%, 20% { color: transparent; }
+            40% { color: #667eea; }
+            100% { color: transparent; }
+        }
+    </style>
 </head>
 <body>
     <div class="main-container">
@@ -16,9 +45,14 @@
                 <button onclick="resetZoom()">↻ Reset Zoom</button>
                 <span id="zoom-level">Zoom: 100%</span>
             </div>
+            <div style="margin-top: 10px; font-size: 0.85em; color: #666;">
+                💡 <strong>Tips:</strong> Click event names to hide/show (👁️ red bars can be clicked to restore) • Drag right edge to resize column • Shift+scroll to zoom
+            </div>
         </div>
-        <div class="timeline-wrapper">
-            <div id="timeline-app" class="timeline-content"></div>
+        <div class="timeline-wrapper loading">
+            <div id="timeline-app" class="timeline-content">
+                <div class="loading">Loading timeline data</div>
+            </div>
         </div>
     </div>
     <div id="tooltip" class="tooltip" style="display: none;"></div>

@@ -18,6 +18,9 @@ body {
     padding: 30px;
     max-width: 1400px;
     margin: 0 auto;
+    /* Enable hardware acceleration */
+    transform: translateZ(0);
+    will-change: scroll-position;
 }
 
 h1 {
@@ -80,6 +83,9 @@ h1 {
     box-shadow: 0 4px 6px rgba(0,0,0,0.05);
     overflow: hidden;
     border: 1px solid #e1e5e9;
+    /* Enable flexbox for lane reordering */
+    display: flex;
+    flex-direction: column;
 }
 
 .timeline-container h3 { 
@@ -110,7 +116,7 @@ h1 {
 }
 
 .event-name { 
-    width: 200px; 
+    width: 250px; 
     flex-shrink: 0; 
     text-align: right; 
     padding-right: 15px; 
@@ -121,6 +127,100 @@ h1 {
     margin-right: 10px;
     padding: 10px 15px;
     border-radius: 4px;
+    /* Handle text overflow while maintaining fixed width */
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    /* Add tooltip behavior */
+    cursor: pointer;
+    position: relative;
+    /* Add resize handle styles */
+    border-right: 2px solid transparent;
+    transition: all 0.2s ease;
+    user-select: none;
+}
+
+/* Resize handle */
+.event-name::after {
+    content: '';
+    position: absolute;
+    right: 0;
+    top: 0;
+    bottom: 0;
+    width: 4px;
+    background: #667eea;
+    opacity: 0;
+    cursor: col-resize;
+    transition: opacity 0.2s ease;
+}
+
+.event-name:hover::after {
+    opacity: 0.7;
+}
+
+.event-name:hover {
+    background: #e3f2fd;
+    border-right: 2px solid #667eea;
+}
+
+/* Hidden event lane - keep clickable but visually minimized */
+.event-lane.hidden {
+    height: 20px;
+    overflow: hidden;
+    opacity: 0.3;
+    background: #f1f3f4;
+    border-left: 3px solid #dc3545;
+}
+
+.event-lane.hidden .event-bar-container {
+    display: none;
+}
+
+.event-lane.hidden .event-name {
+    background: #f8d7da;
+    color: #721c24;
+    font-size: 0.8em;
+    cursor: pointer;
+    border-left: 3px solid #dc3545 !important;
+}
+
+.event-lane.hidden .event-name::before {
+    content: '👁️ ';
+    color: #dc3545;
+}
+
+.event-lane.hidden .event-name:hover {
+    background: #f5c6cb;
+    transform: scale(1.05);
+}
+
+/* Remove moved-to-bottom styles since we're not using that state anymore */
+
+/* Tooltip for long event names */
+.event-name[title]:hover::after {
+    content: attr(title);
+    position: absolute;
+    top: -35px;
+    right: 0;
+    background: linear-gradient(135deg, #2c3e50, #34495e);
+    color: white;
+    padding: 8px 12px;
+    border-radius: 6px;
+    font-size: 12px;
+    white-space: nowrap;
+    z-index: 1000;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    border: 1px solid rgba(255,255,255,0.1);
+    font-family: 'Monaco', 'Menlo', monospace;
+    max-width: 500px;
+    word-break: break-all;
+    white-space: normal;
+}
+
+.event-name:hover {
+    background: #e3f2fd;
+    transform: scale(1.02);
+    transition: all 0.2s ease;
 }
 
 .event-bar-container { 
@@ -140,6 +240,9 @@ h1 {
     transition: width 0.3s ease; 
     min-width: 1000px;
     width: 1000px;
+    /* Performance optimizations */
+    transform: translateZ(0);
+    /* Removed contain property that could interfere with scrolling */
 }
 
 .event-bar { 
@@ -148,14 +251,18 @@ h1 {
     opacity: 0.85; 
     border-radius: 3px; 
     cursor: pointer; 
-    transition: all 0.2s ease;
+    transition: opacity 0.15s ease, transform 0.15s ease;
     border: 1px solid rgba(255,255,255,0.3);
     box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    /* Performance optimizations */
+    will-change: transform, opacity;
+    transform: translateZ(0);
+    /* Removed contain property for better compatibility */
 }
 
 .event-bar:hover { 
     opacity: 1; 
-    transform: scaleY(1.1);
+    transform: scaleY(1.1) translateZ(0);
     box-shadow: 0 2px 6px rgba(0,0,0,0.2);
     z-index: 10;
 }
@@ -196,18 +303,37 @@ h1 {
 }
 
 .timeline-wrapper { 
-    overflow-x: auto; 
-    overflow-y: auto;
+    overflow-x: auto !important; 
+    overflow-y: auto !important;
     border: 1px solid #e1e5e9; 
     max-height: 75vh; 
     border-radius: 8px;
     background: white;
     position: relative;
+    /* Performance optimizations */
+    transform: translateZ(0);
+    will-change: scroll-position;
+    /* Force scrolling to work */
+    -webkit-overflow-scrolling: touch;
+    /* Removed contain property that was blocking horizontal scroll */
+    /* Smooth scrolling for better UX */
+    scroll-behavior: smooth;
+}
+
+/* Override any loading state that might block scrolling */
+.timeline-wrapper.loading {
+    overflow: hidden;
+}
+
+.timeline-wrapper:not(.loading) {
+    overflow-x: auto !important;
+    overflow-y: auto !important;
 }
 
 .timeline-content { 
     min-width: max-content;
     width: 100%;
+    /* Removed contain property that could interfere with scrolling */
 }
 
 /* Scrollbar styling */

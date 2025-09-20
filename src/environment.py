@@ -82,7 +82,7 @@ class Observation(object):
     Converts the observation to a list of Observation objects, presumably unrolling
     vectorized environment observations.
     """
-    num_envs = self.frame.shape[0] if self.frame is not None else None
+    num_envs = len(self.frame) if self.frame is not None else None
     num_envs = self.dense.shape[0] if self.dense is not None else num_envs
     return [
         Observation(frame=self.frame[i] if self.frame is not None else None,
@@ -280,11 +280,16 @@ class RepeatActionEnv(gym.vector.VectorWrapper):
 
     # Now reset environments that got terminated or truncated, so that the
     # first observation is the one after the reset.
-    for i in terminated_or_truncated:
-      obs, info = self.env.unwrapped.envs[i].reset()
-
-      # Convert the observation to the expected Observation type
-      ret_obs[i] = self.observation_wrapper.to_observation(obs)
+    if np.any(terminated_or_truncated):
+      reset_mask = np.zeros((num_envs, ), dtype=bool)
+      reset_mask[list(terminated_or_truncated)] = True
+      obs, info = self.env.reset(options={'reset_mask': reset_mask})
+      obs = obs.as_list()
+      for i in terminated_or_truncated:
+        # Convert the observation to the expected Observation type
+        ret_obs[i] = obs[i]
+        print(f"Resetting environment {i}: {ret_obs[i]}")
+        print(f"Environment {0}: {ret_obs[0]}")
 
     # TODO: info is not handled correctly in this impl, nobody should depend on it
     return merge_observations(

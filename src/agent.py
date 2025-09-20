@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import os
-from src.profiler import ProfileScope
+from src.profiler import ProfileScope, ProfileLockScope
 from src.dqn import DQN, DuelingDQN
 from src.environment import Observation
 from src.noisy_network import replace_linear_with_noisy, NoisyLinear
@@ -46,7 +46,7 @@ class Agent:
     self.gamma = config['gamma']
     self.epsilon_min = config['epsilon_min']
     self.learning_rate = config['learning_rate']
-    self.apply_noisy_network = config['apply_noisy_network']
+    self.apply_noisy_network = config.get('apply_noisy_network', False)
     assert self.apply_noisy_network or ('epsilon_exponential_decay' in config or 'epsilon_linear_decay' in config), \
         "Either 'epsilon_exponential_decay' or 'epsilon_linear_decay' must be provided in config if not using noisy networks."
     self.epsilon_linear_decay = config.get('epsilon_linear_decay', None)
@@ -187,7 +187,7 @@ class Agent:
                reward: float, next_observation: Tuple[List, List], done: bool):
     """Stores experience. State gathered from last state sent to act().
     """
-    with self.replay_buffer_lock, ProfileScope("replay_buffer_append"):
+    with ProfileLockScope("replay_buffer_append", self.replay_buffer_lock):
       self.replay_buffer.append(observation, action, reward, next_observation,
                                 done)
 
@@ -213,13 +213,12 @@ class Agent:
       act_values = np.zeros((self.num_envs, self.action_size))
       return action.astype(int), act_values
     elif self.action_selection == 'max':
-      with torch.no_grad(), self.model_lock, ProfileScope("model_inference"):
-        q_values = self.model(observation.as_input(self.device))
-        q_values_np = q_values.detach().cpu().numpy()
+      observation = observation.as_input(self.device)
+      with torch.no_grad(), ProfileScope("model_inference"):
+        q_values = self.model(observation)
+      q_values_np = q_values.detach().cpu().numpy()
 
       if self.apply_noisy_network:
-        action = np.argmax(q_values_np, axis=1)
-
         weight_mu_norm, weight_mu_sigma_norm = get_noisy_network_weights_norm(
             self.model.named_modules())
         self.summary_writer.add_scalar("Action/NoisyNetworkWeightMuNorm",
@@ -249,7 +248,7 @@ class Agent:
   def compute_target(self, all_reward: torch.Tensor,
                      all_next_observation: Tuple[torch.Tensor, torch.Tensor],
                      all_done: torch.Tensor) -> torch.Tensor:
-    with torch.no_grad(), self.model_lock:
+    with torch.no_grad(), ProfileScope("compute_target"):
       # Double DQN is the next line:
       if self.config.get('double_dqn', True):
         # Use the online model to select the best action for the next state
@@ -264,25 +263,24 @@ class Agent:
         # Use the target model to get the Q-value for the next state
         q_next = self.target_model(all_next_observation,
                                    training=False).max(dim=1).values
-      return all_reward + self.gamma * q_next * (1.0 - all_done.float())
+    return all_reward + self.gamma * q_next * (1.0 - all_done.float())
 
   def compute_prediction(self, all_observation: Tuple[torch.Tensor,
                                                       torch.Tensor],
                          all_action: torch.Tensor) -> torch.Tensor:
-    with self.model_lock:
+    with ProfileScope("compute_prediction"):
       q_values = self.model(all_observation, training=True)
     return torch.gather(q_values, 1, all_action.view(-1, 1)).squeeze(1)
 
   def replay(self):
-    if len(self.replay_buffer) < max(self.batch_size,
-                                     self.config['min_memory_size']):
+    if len(self.replay_buffer) < self.config['min_memory_size']:
       return False
 
     # Gather ids to fix memory_error later on
     # If this is importance sampling, we need to get the weights
     if isinstance(self.replay_buffer, PrioritizedExperienceReplayBuffer):
       # Sample from the replay buffer
-      with self.replay_buffer_lock, ProfileScope('replay_buffer_sample'):
+      with ProfileLockScope('replay_buffer_sample', self.replay_buffer_lock):
         (all_observation, all_action, all_reward, all_next_observation,
          all_done
          ), importance_sampling, sampled_indices = self.replay_buffer.sample(
@@ -301,7 +299,7 @@ class Agent:
 
     else:
       # Sample from the replay buffer without importance sampling
-      with self.replay_buffer_lock, ProfileScope('replay_buffer_sample'):
+      with ProfileLockScope('replay_buffer_sample', self.replay_buffer_lock):
         (all_observation, all_action, all_reward, all_next_observation,
          all_done) = self.replay_buffer.sample(self.batch_size)
       importance_sampling = torch.ones(self.batch_size, device=self.device)
@@ -344,7 +342,7 @@ class Agent:
       self.summary_writer.add_scalar("Replay/TargetUpdate",
                                      self.target_updates_counter)
       # Soft update with 10% interpolation (tau = 0.1)
-      tau = 0.1
+      tau = self.config.get('target_model_soft_update_tau', 0.1)
       with torch.no_grad():
         for target_param, local_param in zip(self.target_model.parameters(),
                                              self.model.parameters()):
@@ -371,10 +369,11 @@ class Agent:
         torch.nn.utils.get_total_norm(self.model.parameters()))
     self.summary_writer.add_scalar("Replay/PreClipGradNorm",
                                    pre_clip_grad_norm)
-    self.summary_writer.add_scalar(
-        "Replay/GradScaleWithLr",
-        min(pre_clip_grad_norm, self.config['clip_gradients']) *
-        self.optimizer.param_groups[0]['lr'])
+    if 'clip_gradients' in self.config:
+      self.summary_writer.add_scalar(
+          "Replay/GradScaleWithLr",
+          min(pre_clip_grad_norm, self.config['clip_gradients']) *
+          self.optimizer.param_groups[0]['lr'])
     self.summary_writer.add_scalar("Replay/TrainedExperiences",
                                    self.trained_experiences)
     return True
