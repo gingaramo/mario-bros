@@ -10,6 +10,7 @@ from src.dqn import DQN, DuelingDQN
 from src.environment import Observation
 from src.noisy_network import replace_linear_with_noisy, NoisyLinear
 from src.replay_buffer import UniformExperienceReplayBuffer, PrioritizedExperienceReplayBuffer, OrderedExperienceReplayBuffer
+from src.agent.agent import Agent
 import pickle
 from torch.optim import lr_scheduler  # Keep -> see horrible exec() hack
 
@@ -25,15 +26,10 @@ def get_noisy_network_weights_norm(named_modules):
       weight_mu_sigma_norm).mean().item()
 
 
-class Agent:
+class ValueAgent(Agent):
 
   def __init__(self, env, device, summary_writer, config):
-    # For now this works for vectorized environments that have only one action dimension.
-    self.action_size = env.action_space.nvec[-1]
-    self.num_envs = env.unwrapped.num_envs
-    self.device = device
-    self.summary_writer = summary_writer
-    self.config = config
+    super().__init__(env, device, summary_writer, config)
 
     # Replay parameters.
     self.batch_size = config['batch_size']
@@ -41,49 +37,6 @@ class Agent:
         'replays_until_target_update', 0)
     self.replays_until_checkpoint = config['checkpoint_every_n_replays']
     self.target_updates_counter = 0
-
-    # Learning parameters.
-    self.gamma = config['gamma']
-    self.epsilon_min = config['epsilon_min']
-    self.learning_rate = config['learning_rate']
-    self.apply_noisy_network = config.get('apply_noisy_network', False)
-    assert self.apply_noisy_network or ('epsilon_exponential_decay' in config or 'epsilon_linear_decay' in config), \
-        "Either 'epsilon_exponential_decay' or 'epsilon_linear_decay' must be provided in config if not using noisy networks."
-    self.epsilon_linear_decay = config.get('epsilon_linear_decay', None)
-    self.epsilon_exponential_decay = config.get('epsilon_exponential_decay',
-                                                None)
-
-    if self.config['loss'] == 'mse':
-      self.get_loss = nn.MSELoss
-    elif self.config['loss'] == 'smooth_l1':
-      self.get_loss = nn.SmoothL1Loss
-    elif self.config['loss'] == 'huber':
-      self.get_loss = nn.HuberLoss
-    else:
-      raise ValueError(f"Unsupported loss function: {self.config['loss']}")
-
-    # Checkpoint functionality
-    _path = os.path.join("checkpoint/", config['name'])
-    if not os.path.exists(_path):
-      os.makedirs(_path)
-    self.checkpoint_path = os.path.join(_path, 'state_dict.pkl')
-    self.checkpoint_state_path = os.path.join(_path, "state.pkl")
-    if (not os.path.exists(self.checkpoint_path)
-        or not os.path.exists(self.checkpoint_state_path)):
-      self.episodes_played = 0
-      self.global_step = 0
-      self.trained_experiences = 0
-      self.initial_epsilon = config.get('epsilon', 1.0)
-    else:
-      with open(self.checkpoint_state_path, "rb") as f:
-        state = pickle.load(f)
-        self.episodes_played = state['episodes_played']
-        self.global_step = state['global_step']
-        self.trained_experiences = state['trained_experiences']
-        self.initial_epsilon = state['initial_epsilon']
-        print(
-            f'Resuming from checkpoint. Episode {self.episodes_played}, global step {self.global_step}, trained experiences {self.trained_experiences}'
-        )
 
     replay_buffer_config = config['replay_buffer']
     if replay_buffer_config['type'] == 'uniform':
@@ -116,6 +69,11 @@ class Agent:
     self.action_selection_temperature = config.get(
         'action_selection_temperature', 1.0)
 
+    # Mutexes for resources accessed by trainer and worker threads in async execution
+    self.model_lock = threading.Lock()
+    self.replay_buffer_lock = threading.Lock()
+
+  def create_models(self, env, config):
     if 'dqn' in config['network'] or 'dueling_dqn' in config['network']:
       mock_observation, _ = env.reset()
       if 'dqn' in config['network']:
@@ -154,34 +112,7 @@ class Agent:
       self.curiosity_module.to(self.device)
       print("Curiosity module initialized.")
 
-    if config['optimizer'] == 'adam':
-      self.optimizer = optim.Adam(self.model.parameters(),
-                                  lr=self.learning_rate)
-    else:
-      raise ValueError(
-          f"Unsupported optimizer: {config['optimizer']}. Supported: 'adam'.")
-
-    self.lr_scheduler = None
-    if 'lr_scheduler' in config:
-      exec(
-          f"self.lr_scheduler = {config['lr_scheduler']['type']}(self.optimizer, **{config['lr_scheduler']['args']})"
-      )
-
-    # Mutexes for resources accessed by trainer and worker threads in async execution
-    self.model_lock = threading.Lock()
-    self.replay_buffer_lock = threading.Lock()
-
-  @property
-  def epsilon(self):
-    if self.epsilon_exponential_decay:
-      eps = self.initial_epsilon * (self.epsilon_exponential_decay**
-                                    self.global_step)
-    elif self.epsilon_linear_decay:
-      eps = self.initial_epsilon - (self.epsilon_linear_decay *
-                                    self.global_step)
-    else:
-      eps = 0.0
-    return max(eps, self.epsilon_min)
+    return self.model.parameters()
 
   def remember(self, observation: Tuple[List, List], action: int,
                reward: float, next_observation: Tuple[List, List], done: bool):
@@ -391,14 +322,5 @@ class Agent:
           training=False)
       return curiosity_reward
 
-  def save_checkpoint(self):
+  def save_models(self):
     torch.save(self.model.state_dict(), self.checkpoint_path)
-    with open(self.checkpoint_state_path, "wb") as f:
-      pickle.dump(
-          {
-              'episodes_played': self.episodes_played,
-              'global_step': self.global_step,
-              'trained_experiences': self.trained_experiences,
-              'initial_epsilon': self.initial_epsilon,
-          }, f)
-    self.summary_writer.flush()

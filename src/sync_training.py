@@ -41,7 +41,8 @@ def run_sync_training(config):
                   desc="Synchronous Worker",
                   position=1,
                   unit=' experiences',
-                  unit_scale=True)
+                  unit_scale=True,
+                  initial=agent.global_step)
 
   observation, _ = env.reset()
   episode_start = np.zeros(env.num_envs, dtype=bool)

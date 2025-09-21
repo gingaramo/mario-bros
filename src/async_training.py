@@ -7,7 +7,7 @@ import time
 import threading
 from tqdm import tqdm
 
-from src.agent import Agent
+from src.agent.agent import Agent
 
 from .environment import create_environment
 from .render import render

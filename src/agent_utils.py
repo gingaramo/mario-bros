@@ -5,7 +5,7 @@ Core agent-environment interaction utilities.
 import numpy as np
 import torch
 
-from src.agent import Agent
+from src.agent.value_agent import ValueAgent
 from .training_utils import record_episode_statistics
 
 
@@ -50,7 +50,7 @@ def create_agent(config, env, summary_writer):
   """
   device = torch.device(config['device'])
   print(f"Using device: {device}")
-  agent = Agent(env, device, summary_writer, config['agent'])
+  agent = ValueAgent(env, device, summary_writer, config['agent'])
   print(f"Model summary: {agent.model}")
   print(f"Parameters: {sum(p.numel() for p in agent.model.parameters())}")
   return agent
