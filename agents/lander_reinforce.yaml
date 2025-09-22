@@ -1,7 +1,7 @@
 device: mps
 
 seed: 42
-execution_mode: synchronous
+execution_mode: asynchronous
 
 env:
   env_name: "LunarLander-v3"
@@ -26,20 +26,18 @@ env:
     grayscale: true
     normalize: true
   HistoryEnv:
-    history_length: 8
-  num_envs: 8
+    history_length: 4
+  num_envs: 32
 
   env_action_labels: [NOOP, LEFT, MAIN, RIGHT]
   num_steps: 5_000_000
-  headless: false
+  headless: true
 
 agent:
-  type: value
-  name: lander_baseline
+  type: policy
+  name: lander_reinforce
   gamma: 0.99
 
-  batch_size: 256
-  min_memory_size: 256
   loss: mse
 
   # Optimizer settings
@@ -52,25 +50,15 @@ agent:
       end_factor: 0.2
       total_iters: 100_000
 
+  batch_size: 4096
   action_selection: max
   epsilon: 0.9
   epsilon_linear_decay: 0.000005
   epsilon_min: 0.05
 
-  replay_buffer:
-    type: uniform
-    size: 100_000
-
-  replays_until_target_update: 5
   checkpoint_every_n_replays: 100
 
   network:
-    dqn:
-      unused_convolution:
-        type: 2d
-        kernel_sizes: [8, 4, 3]
-        channels: [32, 64, 64]
-        strides: [4, 2, 1]
-
-      hidden_layers: [256, 128, 64]
+    mlp_policy:
+      hidden_layers: [32,32,32]
 

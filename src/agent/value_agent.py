@@ -15,27 +15,14 @@ import pickle
 from torch.optim import lr_scheduler  # Keep -> see horrible exec() hack
 
 
-def get_noisy_network_weights_norm(named_modules):
-  weight_mu_norm = []
-  weight_mu_sigma_norm = []
-  for name, module in named_modules:
-    if isinstance(module, NoisyLinear):
-      weight_mu_norm.append(torch.norm(module.weight_mu).item())
-      weight_mu_sigma_norm.append(torch.norm(module.weight_sigma).item())
-  return np.array(weight_mu_norm).mean(), np.array(
-      weight_mu_sigma_norm).mean().item()
-
-
 class ValueAgent(Agent):
 
   def __init__(self, env, device, summary_writer, config):
     super().__init__(env, device, summary_writer, config)
 
     # Replay parameters.
-    self.batch_size = config['batch_size']
     self.replays_until_target_update = config.get(
         'replays_until_target_update', 0)
-    self.replays_until_checkpoint = config['checkpoint_every_n_replays']
     self.target_updates_counter = 0
 
     replay_buffer_config = config['replay_buffer']
@@ -63,11 +50,6 @@ class ValueAgent(Agent):
       raise ValueError(
           f"Unsupported replay buffer type: {replay_buffer_config['type']}. Supported: 'uniform', 'prioritized'."
       )
-
-    # Action selection parameters.
-    self.action_selection = config.get('action_selection', 'max')
-    self.action_selection_temperature = config.get(
-        'action_selection_temperature', 1.0)
 
     # Mutexes for resources accessed by trainer and worker threads in async execution
     self.model_lock = threading.Lock()
@@ -114,67 +96,16 @@ class ValueAgent(Agent):
 
     return self.model.parameters()
 
-  def remember(self, observation: Tuple[List, List], action: int,
-               reward: float, next_observation: Tuple[List, List], done: bool):
+  def remember(self, observation: List[Tuple[List, List]], action: List[int],
+               reward: List[float], next_observation: List[Tuple[List, List]],
+               done: List[bool], episode_start: List[bool]):
     """Stores experience. State gathered from last state sent to act().
     """
     with ProfileLockScope("replay_buffer_append", self.replay_buffer_lock):
-      self.replay_buffer.append(observation, action, reward, next_observation,
-                                done)
-
-  def act(self, observation: Observation) -> tuple[int, np.ndarray]:
-    """Returns the action to take based on the current observation.
-
-    Returns:
-      action: The action to take, either random or based on the model's prediction.
-      act_values: The Q-values predicted by the model for the current observation.
-    """
-    # We only update global step when we're training, not recording.
-    self.global_step += self.num_envs
-    self.summary_writer.set_global_step(self.global_step)
-
-    assert self.action_selection in [
-        'max', 'random'
-    ], f"Unsupported action selection method {self.action_selection}. Supported: 'max', 'random'."
-
-    if self.action_selection == 'random':
-      action = np.random.randint(low=0,
-                                 high=self.action_size,
-                                 size=self.num_envs)
-      act_values = np.zeros((self.num_envs, self.action_size))
-      return action.astype(int), act_values
-    elif self.action_selection == 'max':
-      observation = observation.as_input(self.device)
-      with torch.no_grad(), ProfileScope("model_inference"):
-        q_values = self.model(observation)
-      q_values_np = q_values.detach().cpu().numpy()
-
-      if self.apply_noisy_network:
-        weight_mu_norm, weight_mu_sigma_norm = get_noisy_network_weights_norm(
-            self.model.named_modules())
-        self.summary_writer.add_scalar("Action/NoisyNetworkWeightMuNorm",
-                                       weight_mu_norm)
-        self.summary_writer.add_scalar("Action/NoisyNetworkWeightSigmaNorm",
-                                       weight_mu_sigma_norm)
-
-    # Perform epsilon-greedy action selection
-    action = np.zeros(self.num_envs)
-    random_action_idx = np.random.rand(self.num_envs) < self.epsilon
-    action[random_action_idx] = np.random.randint(
-        low=0, high=self.action_size, size=self.num_envs)[random_action_idx]
-    action[~random_action_idx] = np.argmax(q_values_np,
-                                           axis=1)[~random_action_idx]
-
-    self.summary_writer.add_scalar("Action/Epsilon", self.epsilon)
-
-    return action.astype(int), q_values_np
-
-  def clip_gradients(self):
-    if 'clip_gradients' in self.config:
-      return nn.utils.clip_grad_norm_(self.model.parameters(),
-                                      self.config['clip_gradients'])
-    return torch.nn.utils.clip_grad_norm_(self.model.parameters(),
-                                          float('inf'))
+      for i in range(len(reward)):
+        if not episode_start[i]:
+          self.replay_buffer.append(observation[i], action[i], reward[i],
+                                    next_observation[i], done[i])
 
   def compute_target(self, all_reward: torch.Tensor,
                      all_next_observation: Tuple[torch.Tensor, torch.Tensor],
@@ -205,7 +136,7 @@ class ValueAgent(Agent):
 
   def replay(self):
     if len(self.replay_buffer) < self.config['min_memory_size']:
-      return False
+      return 0
 
     # Gather ids to fix memory_error later on
     # If this is importance sampling, we need to get the weights
@@ -258,11 +189,9 @@ class ValueAgent(Agent):
     loss = loss * importance_sampling
     loss = loss.sum()
     loss.backward()
-    pre_clip_grad_norm = self.clip_gradients()
+    pre_clip_grad_norm = self.clip_gradients(self.model.parameters())
     with self.model_lock, ProfileScope('optimizer_step'):
       self.optimizer.step()
-
-    self.trained_experiences += self.batch_size
 
     # Update target model every `target_update_frequency` steps
     self.replays_until_target_update -= 1
@@ -282,16 +211,6 @@ class ValueAgent(Agent):
       # Ensure target model stays in eval mode
       self.target_model.eval()
 
-    # Checkpoint every `checkpoint_every_n_replays` replays
-    self.replays_until_checkpoint -= 1
-    if self.replays_until_checkpoint % self.config[
-        'checkpoint_every_n_replays'] == 0:
-      with ProfileScope('checkpoint'):
-        self.save_checkpoint()
-      self.replays_until_checkpoint = self.config['checkpoint_every_n_replays']
-
-    self.lr_scheduler.step() if self.lr_scheduler else None
-
     self.summary_writer.add_scalar('Replay/Loss', loss)
     self.summary_writer.add_scalar('Replay/LearningRate',
                                    self.optimizer.param_groups[0]['lr'])
@@ -305,9 +224,7 @@ class ValueAgent(Agent):
           "Replay/GradScaleWithLr",
           min(pre_clip_grad_norm, self.config['clip_gradients']) *
           self.optimizer.param_groups[0]['lr'])
-    self.summary_writer.add_scalar("Replay/TrainedExperiences",
-                                   self.trained_experiences)
-    return True
+    return self.batch_size
 
   def curiosity_reward(self, observation, next_observation, action, device):
     with torch.no_grad():
@@ -324,3 +241,16 @@ class ValueAgent(Agent):
 
   def save_models(self):
     torch.save(self.model.state_dict(), self.checkpoint_path)
+
+  def get_action(self,
+                 observation: Observation) -> Tuple[np.ndarray, np.ndarray]:
+    """Returns the action to take based on the current observation.
+
+    Returns:
+      action: The action to take, either random or based on the model's prediction.
+      act_values: The Q-values predicted by the model for the current observation.
+    """
+    q_values = self.model(observation.as_input(self.device))
+    q_values_np = q_values.detach().cpu().numpy()
+    actions = np.argmax(q_values_np, axis=1)
+    return actions, q_values_np

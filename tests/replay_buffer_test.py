@@ -179,7 +179,8 @@ class TestUniformReplayBuffer(unittest.TestCase):
       self.replay_buffer.append(obs, i, 1.0, next_obs, False)
 
     # Try to sample more than available (should allow repeats, no error)
-    all_obs, all_actions, all_rewards, all_next_obs, all_done = self.replay_buffer.sample(5)
+    all_obs, all_actions, all_rewards, all_next_obs, all_done = self.replay_buffer.sample(
+        5)
     # All actions should be from our original set (0, 1)
     for action in all_actions:
       self.assertIn(action.item(), [0, 1])
@@ -390,7 +391,8 @@ class TestPrioritizedReplayBuffer(unittest.TestCase):
       self.replay_buffer.append(obs, i, 1.0, next_obs, False)
 
     # Try to sample more than available (should allow repeats, no error)
-    (all_obs, all_actions, all_rewards, all_next_obs, all_done), importance_sampling, indices = self.replay_buffer.sample(5)
+    (all_obs, all_actions, all_rewards, all_next_obs,
+     all_done), importance_sampling, indices = self.replay_buffer.sample(5)
     # All actions should be from our original set (0, 1)
     for action in all_actions:
       self.assertIn(action.item(), [0, 1])

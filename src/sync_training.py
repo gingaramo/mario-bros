@@ -56,12 +56,8 @@ def run_sync_training(config):
       env_pbar.update(env.num_envs)
     (observation, action, reward, next_observation, done, info) = experience
 
-    # Store experience if we're not at the begining of an episode
-    for i, (obs, act, rew, neo, don) in enumerate(
-        zip(observation.as_list_input('cpu'), action, reward,
-            next_observation.as_list_input('cpu'), done)):
-      if not episode_start[i]:
-        agent.remember(obs, act, rew, neo, don)
+    agent.remember(observation.as_list_input('cpu'), action, reward,
+                   next_observation.as_list_input('cpu'), done, episode_start)
     observation = next_observation
     episode_start = done
 
@@ -69,10 +65,11 @@ def run_sync_training(config):
     render(info, q_values, action, config)
     wait_for_frame_step()  # Debug frame-by-frame stepping
 
-    with ProfileScope("agent_replay"):
-      if agent.replay():
-        ProfileScope.add_metadata('batch_size', config['agent']['batch_size'])
-        train_pbar.update(config['agent']['batch_size'])
+    with ProfileScope("agent_train"):
+      trained_experiences = agent.train()
+      if trained_experiences:
+        ProfileScope.add_metadata('batch_size', trained_experiences)
+        train_pbar.update(trained_experiences)
 
   print("Maximum number of steps reached.")
 

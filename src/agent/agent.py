@@ -14,6 +14,17 @@ import pickle
 from torch.optim import lr_scheduler  # Keep -> see horrible exec() hack
 
 
+def get_noisy_network_weights_norm(named_modules):
+  weight_mu_norm = []
+  weight_mu_sigma_norm = []
+  for name, module in named_modules:
+    if isinstance(module, NoisyLinear):
+      weight_mu_norm.append(torch.norm(module.weight_mu).item())
+      weight_mu_sigma_norm.append(torch.norm(module.weight_sigma).item())
+  return np.array(weight_mu_norm).mean(), np.array(
+      weight_mu_sigma_norm).mean().item()
+
+
 class Agent:
 
   def __init__(self, env, device, summary_writer, config):
@@ -22,12 +33,19 @@ class Agent:
     self.num_envs = env.unwrapped.num_envs
     self.device = device
     self.summary_writer = summary_writer
+    self.batch_size = config['batch_size']
 
     self.gamma = config['gamma']
     self.epsilon_min = config.get('epsilon_min', 0.01)
     self.epsilon_exponential_decay = config.get('epsilon_exponential_decay',
                                                 None)
     self.epsilon_linear_decay = config.get('epsilon_linear_decay', None)
+    self.replays_until_checkpoint = config['checkpoint_every_n_replays']
+
+    # Action selection parameters.
+    self.action_selection = config.get('action_selection', 'max')
+    self.action_selection_temperature = config.get(
+        'action_selection_temperature', 1.0)
 
     # Learning parameters.
     self.learning_rate = config['learning_rate']
@@ -110,11 +128,66 @@ class Agent:
                reward: float, next_observation: Tuple[List, List], done: bool):
     raise NotImplementedError("Subclasses should implement this method.")
 
-  def act(self, observation: Observation) -> tuple[int, np.ndarray]:
+  def get_action(self, observation: Observation) -> tuple[int, np.ndarray]:
     raise NotImplementedError("Subclasses should implement this method.")
 
-  def replay(self):
-    raise NotImplementedError("Subclasses should implement this method.")
+  def act(self, observation: Observation) -> tuple[int, np.ndarray]:
+    """Returns the action to take based on the current observation.
+
+    Returns:
+      action: The action to take, either random or based on the model's prediction.
+      act_values: The Q-values predicted by the model for the current observation.
+    """
+    self.global_step += self.num_envs
+    self.summary_writer.set_global_step(self.global_step)
+
+    assert self.action_selection in [
+        'max', 'random'
+    ], f"Unsupported action selection method {self.action_selection}. Supported: 'max', 'random'."
+
+    if self.action_selection == 'random':
+      action = np.random.randint(low=0,
+                                 high=self.action_size,
+                                 size=self.num_envs)
+      act_values = np.zeros((self.num_envs, self.action_size))
+      return action.astype(int), act_values
+    elif self.action_selection == 'max':
+      with torch.no_grad(), ProfileScope("model_inference"):
+        actions, values = self.get_action(observation)
+
+    # Perform epsilon-greedy action selection
+    action = np.zeros(self.num_envs)
+    random_action_idx = np.random.rand(self.num_envs) < self.epsilon
+    action[random_action_idx] = np.random.randint(
+        low=0, high=self.action_size, size=self.num_envs)[random_action_idx]
+    action[~random_action_idx] = actions[~random_action_idx]
+
+    self.summary_writer.add_scalar("Action/Epsilon", self.epsilon)
+
+    return action.astype(int), values
+
+  def clip_gradients(self, parameters):
+    if 'clip_gradients' in self.config:
+      return nn.utils.clip_grad_norm_(parameters,
+                                      self.config['clip_gradients'])
+    return torch.nn.utils.clip_grad_norm_(parameters, float('inf'))
+
+  def train(self):
+    trained_experiences = self.replay()
+    if trained_experiences:
+      self.trained_experiences += trained_experiences
+      self.lr_scheduler.step() if self.lr_scheduler else None
+
+      self.replays_until_checkpoint -= 1
+      if self.replays_until_checkpoint <= 0:
+        with ProfileScope('checkpoint'):
+          self.save_checkpoint()
+        self.replays_until_checkpoint = self.config[
+            'checkpoint_every_n_replays']
+
+      self.summary_writer.add_scalar("Replay/TrainedExperiences",
+                                     self.trained_experiences)
+    return trained_experiences
 
   def save_models(self):
     raise NotImplementedError("Subclasses should implement this method.")

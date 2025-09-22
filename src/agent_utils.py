@@ -50,7 +50,12 @@ def create_agent(config, env, summary_writer):
   """
   device = torch.device(config['device'])
   print(f"Using device: {device}")
-  agent = ValueAgent(env, device, summary_writer, config['agent'])
-  print(f"Model summary: {agent.model}")
-  print(f"Parameters: {sum(p.numel() for p in agent.model.parameters())}")
+  if config['agent']['type'] == 'policy':
+    from .agent.policy_agent import REINFORCEAgent
+    agent = REINFORCEAgent(env, device, summary_writer, config['agent'])
+  elif config['agent']['type'] == 'value':
+    from .agent.value_agent import ValueAgent
+    agent = ValueAgent(env, device, summary_writer, config['agent'])
+  # print(f"Model summary: {agent.model}")
+  # print(f"Parameters: {sum(p.numel() for p in agent.model.parameters())}")
   return agent

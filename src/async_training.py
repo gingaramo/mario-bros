@@ -58,11 +58,9 @@ def async_worker_thread(config, agent, worker_id=0):
     (observation, action, reward, next_observation, done, info) = experience
 
     # Store experience if we're not at the begining of an episode
-    for i, (obs, act, rew, neo, don) in enumerate(
-        zip(observation.as_list_input('cpu'), action, reward,
-            next_observation.as_list_input('cpu'), done)):
-      if not episode_start[i]:
-        agent.remember(obs, act, rew, neo, don)
+    agent.remember(observation.as_list_input('cpu'), action, reward,
+                   next_observation.as_list_input('cpu'), done, episode_start)
+
     observation = next_observation
     episode_start = done
 
@@ -102,10 +100,11 @@ def async_trainer_thread(config, agent: Agent, stop_event):
 
   while stop_event.is_set() is False:
     # Train the agent if replay is successful
-    with ProfileScope("agent_replay"):
-      if agent.replay():
-        ProfileScope.add_metadata('batch_size', config['agent']['batch_size'])
-        pbar.update(config['agent']['batch_size'])
+    with ProfileScope("agent_train"):
+      trained_experiences = agent.train()
+      if trained_experiences:
+        ProfileScope.add_metadata('batch_size', trained_experiences)
+        pbar.update(trained_experiences)
       else:
         # We have not yet accumulated enough experiences.
         time.sleep(0.001)
