@@ -52,7 +52,15 @@ def create_agent(config, env, summary_writer):
   print(f"Using device: {device}")
   if config['agent']['type'] == 'policy':
     from .agent.policy_agent import REINFORCEAgent
-    agent = REINFORCEAgent(env, device, summary_writer, config['agent'])
+    from .agent.policy_agent import A2CAgent
+    if 'critic' in config['agent']['network']:
+      # Assume A2C
+      agent = A2CAgent(env, device, summary_writer, config['agent'])
+    else:
+      # Assume REINFORCE
+      assert 'actor' in config['agent'][
+          'network'], "Actor network config missing"
+      agent = REINFORCEAgent(env, device, summary_writer, config['agent'])
   elif config['agent']['type'] == 'value':
     from .agent.value_agent import ValueAgent
     agent = ValueAgent(env, device, summary_writer, config['agent'])

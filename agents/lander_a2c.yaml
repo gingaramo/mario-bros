@@ -1,0 +1,68 @@
+device: mps
+
+seed: 42
+execution_mode: synchronous
+
+env:
+  env_name: "LunarLander-v3"
+  env_kwargs:
+    continuous: False
+    gravity: -10.0
+    enable_wind: False
+    wind_power: 15.0
+    turbulence_power: 1.5
+  env_wrappers:
+    #- PreprocessFrameEnv
+    # - HistoryEnv
+    - CaptureRenderFrameEnv
+    #- ReturnActionEnv
+    
+  ObservationWrapper:
+    input: dense
+  CaptureRenderFrameEnv:
+    mode: capture  # Options: 'capture', 'replace'
+  PreprocessFrameEnv:
+    resize_shape: [84, 84]
+    grayscale: true
+    normalize: true
+  HistoryEnv:
+    history_length: 4
+  num_envs: 16
+
+  env_action_labels: [NOOP, LEFT, MAIN, RIGHT]
+  num_steps: 8_500_000
+  headless: false
+
+agent:
+  type: policy
+  name: lander_a2c_with_torso
+  gamma: 0.99
+
+  loss: mse
+
+  # Optimizer settings
+  optimizer: adam
+  learning_rate: 0.0001
+  lr_scheduler:
+    type: lr_scheduler.LinearLR
+    args:
+      start_factor: 1
+      end_factor: 0.2
+      total_iters: 100_000
+
+  batch_size: 128
+  action_selection: max
+  epsilon: 0.01
+  epsilon_linear_decay: 0.000005
+  epsilon_min: 0.01
+
+  checkpoint_every_n_replays: 100
+
+  network:
+    torso:
+      hidden_layers: [32, 32]
+    actor:
+      hidden_layers: [32, 32, 32]
+    critic:
+      hidden_layers: [8, 8, 8]
+
