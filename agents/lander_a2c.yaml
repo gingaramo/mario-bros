@@ -27,22 +27,24 @@ env:
     normalize: true
   HistoryEnv:
     history_length: 4
-  num_envs: 16
+  num_envs: 32
 
   env_action_labels: [NOOP, LEFT, MAIN, RIGHT]
-  num_steps: 8_500_000
+  num_steps: 9_500_000
   headless: false
 
 agent:
   type: policy
-  name: lander_a2c_with_torso
+  name: lander_a2c
   gamma: 0.99
 
   loss: mse
 
   # Optimizer settings
   optimizer: adam
-  learning_rate: 0.0001
+  clip_grandients: 10.0
+  learning_rate: 0.0003
+  entropy_coeff: 0.1
   lr_scheduler:
     type: lr_scheduler.LinearLR
     args:
@@ -52,17 +54,15 @@ agent:
 
   batch_size: 128
   action_selection: max
-  epsilon: 0.01
-  epsilon_linear_decay: 0.000005
-  epsilon_min: 0.01
 
   checkpoint_every_n_replays: 100
 
   network:
+    use_residual: true
     torso:
       hidden_layers: [32, 32]
     actor:
-      hidden_layers: [32, 32, 32]
+      hidden_layers: [32, 32]
     critic:
-      hidden_layers: [8, 8, 8]
+      hidden_layers: [32, 32]
 

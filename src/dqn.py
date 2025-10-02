@@ -5,6 +5,7 @@ import torch
 import torch.nn as nn
 import src.render as render
 from src.environment import Observation
+from src.network.observation_layer import CNNObservationLayer
 
 
 def _create_mlp(hidden_layers_dim: list):
@@ -29,60 +30,16 @@ class BaseDQN(nn.Module):
     """
     super(BaseDQN, self).__init__()
     self.action_size = action_size
-    self.flattened_cnn_dim = 0
-    self.convolutions = nn.ModuleList()
-    if mock_observation.frame is not None:
-      self.flattened_cnn_dim = self.initialize_cnn(mock_observation.frame,
-                                                   config['convolution'])
-    has_dense_input = mock_observation.dense is not None
+    self.convolution = None if mock_observation.frame is None else CNNObservationLayer(
+        mock_observation, config['convolution'])
+
+    cnn_output_dim = 0 if mock_observation.frame is None else self.convolution.output_dim
     # Note mock_observation.dense.shape[1] is because we run on vectorized environments,
     # so [0] is num_envs.
-    self.cnn_plus_dense_input_dim = (
-        self.flattened_cnn_dim +
-        (mock_observation.dense.shape[1] if has_dense_input else 0))
-
+    dense_input_dim = 0 if mock_observation.dense is None else mock_observation.dense.shape[
+        1]
+    self.cnn_plus_dense_input_dim = cnn_output_dim + dense_input_dim
     self.activation = torch.nn.LeakyReLU()
-
-  def initialize_cnn(self, mock_frame: np.ndarray, config: dict):
-    """
-    Initializes the CNN layers based on the mock observation and configuration.
-    """
-    mock_frame = torch.Tensor(mock_frame, device=torch.device('cpu'))
-
-    convolution_type = config.get('type', '2d')
-    if convolution_type == '2d':
-      make_conv = nn.Conv2d
-    elif convolution_type == '3d':
-      make_conv = nn.Conv3d
-    else:
-      raise ValueError(
-          f"Unsupported convolution type: {config['type']}. Supported: '2d', '3d'."
-      )
-    # Technically channels_in will either be actual channels or stacked frames.
-    channels_in = mock_frame.shape[1] if len(mock_frame.shape) == 4 else 1
-    for (channels_out, kernel_size, stride) in zip(config['channels'],
-                                                   config['kernel_sizes'],
-                                                   config['strides']):
-      self.convolutions.append(
-          make_conv(channels_in, channels_out, kernel_size, stride=stride))
-      channels_in = channels_out
-
-    def _get_flattened_shape(x: torch.Tensor) -> int:
-      # We keep the first environment observation only.
-      x = x[0]
-      for conv in self.convolutions:
-        x = conv(x)
-      return x.flatten().shape[0]
-
-    return _get_flattened_shape(mock_frame)
-
-  def forward_cnn(self, x: torch.Tensor) -> torch.Tensor:
-    "Forward pass for CNN layers only. Expects batch dimension"
-    for conv in self.convolutions:
-      x = self.activation(conv(x))
-
-    # Flatten but preserve batch dimension
-    return x.flatten(start_dim=1)
 
   def forward_dense(self, x: torch.Tensor, training: bool) -> torch.Tensor:
     raise NotImplementedError(
@@ -94,8 +51,8 @@ class BaseDQN(nn.Module):
                   side_input: torch.Tensor,
                   training: bool = False) -> torch.Tensor:
     "Forward pass for DQN model. Expects batch dimension"
-    if self.convolutions:
-      x = self.forward_cnn(x)
+    if self.convolution:
+      x = self.convolution(x)
     # Side input might be an empty tensor.
     x = torch.concat([x, side_input], dim=1)
     x = self.forward_dense(x, training=training)

@@ -50,8 +50,7 @@ class Agent:
     # Learning parameters.
     self.learning_rate = config['learning_rate']
     self.apply_noisy_network = config.get('apply_noisy_network', False)
-    assert self.apply_noisy_network or ('epsilon_exponential_decay' in config or 'epsilon_linear_decay' in config), \
-        "Either 'epsilon_exponential_decay' or 'epsilon_linear_decay' must be provided in config if not using noisy networks."
+
     if config['loss'] == 'mse':
       self.get_loss = nn.MSELoss
     elif config['loss'] == 'smooth_l1':

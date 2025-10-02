@@ -56,8 +56,8 @@ def run_sync_training(config):
       env_pbar.update(env.num_envs)
     (observation, action, reward, next_observation, done, info) = experience
 
-    agent.remember(observation.as_list_input('cpu'), action, reward,
-                   next_observation.as_list_input('cpu'), done, episode_start)
+    agent.remember(observation.as_list(), action, reward,
+                   next_observation.as_list(), done, episode_start)
     observation = next_observation
     episode_start = done
 

@@ -1,7 +1,7 @@
 device: mps
 
 seed: 42
-execution_mode: asynchronous
+execution_mode: synchronous
 
 env:
   env_name: "LunarLander-v3"
@@ -27,11 +27,11 @@ env:
     normalize: true
   HistoryEnv:
     history_length: 4
-  num_envs: 32
+  num_envs: 8
 
   env_action_labels: [NOOP, LEFT, MAIN, RIGHT]
-  num_steps: 5_000_000
-  headless: true
+  num_steps: 5_500_000
+  headless: false
 
 agent:
   type: policy
@@ -50,15 +50,18 @@ agent:
       end_factor: 0.2
       total_iters: 100_000
 
-  batch_size: 4096
+  batch_size: 128
   action_selection: max
-  epsilon: 0.9
+  epsilon: 0.01
   epsilon_linear_decay: 0.000005
-  epsilon_min: 0.05
+  epsilon_min: 0.01
 
   checkpoint_every_n_replays: 100
-
+  
   network:
-    mlp_policy:
-      hidden_layers: [32,32,32]
+    use_residual: false
+    torso:
+      hidden_layers: [32,32]
+    actor:
+      hidden_layers: [32]
 

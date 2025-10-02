@@ -24,3 +24,10 @@ dependencies:
     - torch==2.6.0+cpu; sys_platform == "linux" or sys_platform == "win32"
     - torchinfo
     - swig
+    - umap-learn
+    - scikit-learn
+    - plotly-express
+    - Pillow
+    - nbformat>=4.2.0 
+    - dash
+    
