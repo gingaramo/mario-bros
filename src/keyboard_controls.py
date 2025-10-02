@@ -3,8 +3,22 @@ Keyboard controls and interactive debugging utilities.
 """
 
 import threading
-from pynput import keyboard
 from .render import set_rendering_enabled, is_headless_mode
+
+# Only import pynput when not in headless mode
+keyboard = None
+
+def _ensure_keyboard_imported():
+    """Lazy import of pynput keyboard module to avoid X11 errors in headless mode."""
+    global keyboard
+    if keyboard is None and not is_headless_mode():
+        try:
+            from pynput import keyboard as _keyboard
+            keyboard = _keyboard
+        except ImportError as e:
+            print(f"Warning: Could not import pynput keyboard module: {e}")
+            print("Keyboard controls will be disabled.")
+    return keyboard is not None
 
 # Keyboard control constants
 KEY_CONTINUE = 'C'
@@ -63,8 +77,11 @@ def start_keyboard_listener():
     Start a keyboard listener thread for interactive debugging controls.
     
     Returns:
-        keyboard.Listener: The keyboard listener object
+        keyboard.Listener: The keyboard listener object or None if keyboard not available
     """
+  if not _ensure_keyboard_imported():
+    return None
+    
   listener = keyboard.Listener(on_press=handle_keyboard_input)
   listener.start()
   return listener
@@ -73,7 +90,16 @@ def start_keyboard_listener():
 def setup_interactive_controls():
   """
     Setup interactive keyboard controls, for debugging, profiling and frame stepping.
+    Only active when not in headless mode and keyboard module is available.
     """
+  if is_headless_mode():
+    print("Headless mode enabled - keyboard controls disabled")
+    return
+    
+  if not _ensure_keyboard_imported():
+    print("Keyboard module not available - interactive controls disabled")
+    return
+    
   keyboard_thread = threading.Thread(target=start_keyboard_listener)
   keyboard_thread.daemon = True
   keyboard_thread.start()
