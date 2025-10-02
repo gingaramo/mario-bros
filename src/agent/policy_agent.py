@@ -76,6 +76,11 @@ class Policy(nn.Module):
     cnn_output = self.convolution(image) if self.convolution else torch.empty(
         0, device=dense.device)
 
+    if training and self.user_residual:
+      with torch.no_grad():
+        for key in self.residuals:
+          self.residuals[key].clamp_(0.0, 1.0)
+
     torso_dense = torch.concat([cnn_output, dense], dim=1)
     if self.torso:
       for i, layer in enumerate(self.torso):
@@ -214,7 +219,7 @@ class REINFORCEAgent(PolicyAgent):
 
     x = merge_observations(observations).as_input(self.device)
     # Calculate log_probs
-    x, _ = self.policy(x)
+    x, _ = self.policy(x, training=True)
     assert _ is None, "REINFORCE does not have a critic"
     probs = torch.nn.functional.softmax(x, dim=-1)
     m = torch.distributions.Categorical(probs=probs)
@@ -229,6 +234,7 @@ class REINFORCEAgent(PolicyAgent):
     loss.backward()
     pre_clip_grad_norm = self.clip_gradients(self.policy.parameters())
     self.optimizer.step()
+    self.policy.clamp_residuals()
 
     self.summary_writer.add_scalar('Replay/Loss', loss)
     self.summary_writer.add_scalar('Replay/LearningRate',
@@ -333,8 +339,8 @@ class A2CAgent(PolicyAgent):
     critic_loss = nn.MSELoss()(rewards, obs_critic)
 
     advantage = rewards - obs_critic.detach()
-    #advantage = (advantage - advantage.mean()) / (advantage.std() + 1e-8)
-    advantage = advantage - advantage.mean()
+    advantage = (advantage - advantage.mean()) / (advantage.std() + 1e-8)
+    #advantage = advantage - advantage.mean()
     log_softmax_action_chosen = torch.gather(
         log_softmax, 1,
         torch.tensor([self.episode_actions[i][0] for i in valid_obs],

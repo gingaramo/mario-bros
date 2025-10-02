@@ -35,7 +35,7 @@ env:
 
 agent:
   type: policy
-  name: lander_a2c
+  name: lander_a2c_bis
   gamma: 0.99
 
   loss: mse
