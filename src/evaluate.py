@@ -4,6 +4,7 @@ Synchronous training implementation with combined worker/trainer process.
 
 import numpy as np
 from tqdm import tqdm
+from typing import Tuple, List
 
 from src.profiler import ProfileScope
 
@@ -15,7 +16,8 @@ from .agent_utils import execute_agent_step, create_agent
 from .tb_logging import DummySummaryWriter
 
 
-def evaluate_agent(config, num_episodes):
+def evaluate_agent(config,
+                   num_episodes) -> Tuple[List[List[float]], List[int]]:
   """
     Evaluate the trained agent on a set number of episodes.
 
@@ -29,7 +31,7 @@ def evaluate_agent(config, num_episodes):
   agent = create_agent(config, env, summary_writer)
 
   evaluate_pbar = tqdm(total=num_episodes,
-                       desc="Synchronous Trainer",
+                       desc="Model Evaluation",
                        position=0,
                        unit=' episode',
                        unit_scale=True)
@@ -44,7 +46,7 @@ def evaluate_agent(config, num_episodes):
       experience = execute_agent_step(action, lambda action: env.step(action),
                                       observation, agent.summary_writer)
 
-    (observation, action, reward, next_observation, done, info) = experience
+    (_, action, _, observation, done, info) = experience
 
     # Store experience if we're not at the begining of an episode
     for i, don in enumerate(done):
@@ -54,15 +56,9 @@ def evaluate_agent(config, num_episodes):
         episode_steps.append(info['episode_steps'][i])
         num_episodes -= 1
 
-    observation = next_observation
-
     # Render frames if rendering is enabled or recording is active
     render(info, q_values, action, config)
-    wait_for_frame_step()  # Debug frame-by-frame stepping
 
-  print("Maximum number of evaluation episodes reached.")
-
-  print(f"Accumulated rewards: {accumulated_reward}")
-  print(f"Episode steps: {episode_steps}")
   env.close()
   evaluate_pbar.close()
+  return accumulated_reward, episode_steps

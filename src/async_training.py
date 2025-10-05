@@ -58,8 +58,8 @@ def async_worker_thread(config, agent, worker_id=0):
     (observation, action, reward, next_observation, done, info) = experience
 
     # Store experience if we're not at the begining of an episode
-    agent.remember(observation.as_list_input('cpu'), action, reward,
-                   next_observation.as_list_input('cpu'), done, episode_start)
+    agent.remember(observation.as_list(), action, reward,
+                   next_observation.as_list(), done, episode_start)
 
     observation = next_observation
     episode_start = done

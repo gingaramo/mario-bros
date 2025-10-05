@@ -9,7 +9,6 @@ from src.profiler import ProfileScope, ProfileLockScope
 from src.dqn import DQN, DuelingDQN
 from src.environment import Observation
 from src.noisy_network import replace_linear_with_noisy, NoisyLinear
-from src.replay_buffer import UniformExperienceReplayBuffer, PrioritizedExperienceReplayBuffer, OrderedExperienceReplayBuffer
 import pickle
 from torch.optim import lr_scheduler  # Keep -> see horrible exec() hack
 

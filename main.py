@@ -49,7 +49,10 @@ def main(args):
   execution_mode = config.get('execution_mode', 'synchronous')
   if args.evaluate_episodes > 0:
     print(f"Evaluating the agent on {args.evaluate_episodes} episodes.")
-    evaluate_agent(config, args.evaluate_episodes)
+    accumulated_reward, episode_steps = evaluate_agent(config,
+                                                       args.evaluate_episodes)
+    print(f"Accumulated rewards: {accumulated_reward}")
+    print(f"Episode steps: {episode_steps}")
 
   if execution_mode == 'synchronous':
     print("Running in synchronous mode.")

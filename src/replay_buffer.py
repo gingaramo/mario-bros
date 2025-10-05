@@ -8,8 +8,10 @@ import math
 # Handle imports for both module-style and direct execution
 try:
   import src.sum_tree as sum_tree
+  from src.environment import Observation, merge_observations
 except ImportError:
   import sum_tree
+  from environment import Observation, merge_observations
 
 
 class ReplayBuffer(object):
@@ -37,89 +39,25 @@ class ReplayBuffer(object):
 
   def from_list_to_tensors(
       self,
-      all_observation: List[Tuple[torch.Tensor, torch.Tensor]],
+      all_observation: List[Observation],
       all_action: List[int],
       all_reward: List[float],
-      all_next_observation: List[Tuple[torch.Tensor, torch.Tensor]],
+      all_next_observation: List[Observation],
       all_done: List[bool],
   ) -> Tuple[Tuple[torch.Tensor, torch.Tensor], torch.Tensor, torch.Tensor,
              Tuple[torch.Tensor, torch.Tensor], torch.Tensor]:
     """Converts lists of observations, actions, rewards, next observations, and done flags
     into a tuple of tensors, in the correct device and ready to be used."""
-
-    def _to_input(
-        observations: List[Tuple[torch.Tensor, torch.Tensor]]
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-      no_tensor = torch.tensor((), device=self.device)
-
-      # Check if ALL observations have frame data (must be consistent)
-      frame_shapes = [obs[0].shape for obs in observations]
-      has_frames = [obs[0].numel() > 0 for obs in observations]
-
-      # Check for mixed frame types (some have frames, some don't)
-      if not (all(has_frames) or not any(has_frames)):
-        raise ValueError(
-            "Mixed observation types not supported: some observations have frames, others don't"
-        )
-
-      if not any(has_frames):
-        all_frames = no_tensor
-      else:
-        # Ensure all frames have the same shape
-        if not all(shape == frame_shapes[0] for shape in frame_shapes):
-          raise ValueError("All frame observations must have the same shape")
-
-        # Handle both tensor and numpy array inputs efficiently
-        frames_list = [observation[0] for observation in observations]
-        if torch.is_tensor(frames_list[0]):
-          # If already tensors, stack them and move to device
-          all_frames = torch.stack(frames_list).to(device=self.device,
-                                                   dtype=torch.float)
-        else:
-          # If numpy arrays, use np.stack then convert to tensor
-          all_frames = torch.tensor(np.stack(frames_list),
-                                    dtype=torch.float,
-                                    device=self.device)
-
-      # Check if ALL observations have dense data (must be consistent)
-      dense_shapes = [obs[1].shape for obs in observations]
-      has_dense = [obs[1].numel() > 0 for obs in observations]
-
-      # Check for mixed dense types (some have dense, some don't)
-      if not (all(has_dense) or not any(has_dense)):
-        raise ValueError(
-            "Mixed observation types not supported: some observations have dense vectors, others don't"
-        )
-
-      if not any(has_dense):
-        all_dense = no_tensor
-      else:
-        # Ensure all dense vectors have the same shape
-        if not all(shape == dense_shapes[0] for shape in dense_shapes):
-          raise ValueError("All dense observations must have the same shape")
-
-        # Handle both tensor and numpy array inputs efficiently
-        dense_list = [observation[1] for observation in observations]
-        if torch.is_tensor(dense_list[0]):
-          # If already tensors, stack them and move to device
-          all_dense = torch.stack(dense_list).to(device=self.device,
-                                                 dtype=torch.float)
-        else:
-          # If numpy arrays, use np.stack then convert to tensor
-          all_dense = torch.tensor(np.stack(dense_list),
-                                   dtype=torch.float,
-                                   device=self.device)
-      return (all_frames, all_dense)
-
     # Convert all of them into tensors
-    all_observation = _to_input(all_observation)
+    all_observation = merge_observations(all_observation).as_input(self.device)
     all_action = torch.tensor(all_action,
                               dtype=torch.int64,
                               device=self.device)
     all_reward = torch.tensor(all_reward,
                               dtype=torch.float,
                               device=self.device)
-    all_next_observation = _to_input(all_next_observation)
+    all_next_observation = merge_observations(all_next_observation).as_input(
+        self.device)
     all_done = torch.tensor(all_done, dtype=torch.bool, device=self.device)
 
     return all_observation, all_action, all_reward, all_next_observation, all_done
@@ -158,7 +96,6 @@ class UniformExperienceReplayBuffer(ReplayBuffer):
   """A simple replay buffer that samples uniformly from the buffer."""
 
   def sample(self, batch_size):
-
 
     minibatch = random.choices(self.buffer, k=batch_size)
 

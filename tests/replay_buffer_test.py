@@ -12,6 +12,7 @@ if src_path not in sys.path:
   sys.path.insert(0, src_path)
 
 from replay_buffer import UniformExperienceReplayBuffer, PrioritizedExperienceReplayBuffer
+from environment import Observation
 
 
 class TestUniformReplayBuffer(unittest.TestCase):
@@ -31,12 +32,13 @@ class TestUniformReplayBuffer(unittest.TestCase):
                                        has_frame=True,
                                        has_dense=True,
                                        batch_size=1):
-    """Helper to create mock observation tensors similar to Observation.as_input()."""
+    """Helper to create mock Observation objects."""
     observations = []
     for _ in range(batch_size):
-      frame = torch.randn(3, 84, 84) if has_frame else torch.tensor(())
-      dense = torch.randn(4) if has_dense else torch.tensor(())
-      observations.append((frame, dense))
+      frame = np.random.randn(3, 84, 84).astype(
+          np.float32) if has_frame else None
+      dense = np.random.randn(4).astype(np.float32) if has_dense else None
+      observations.append(Observation(frame=frame, dense=dense))
     return observations
 
   def test_basic_workflow_with_frame_and_dense_observations(self):
@@ -281,12 +283,13 @@ class TestPrioritizedReplayBuffer(unittest.TestCase):
                                        has_frame=True,
                                        has_dense=True,
                                        batch_size=1):
-    """Helper to create mock observation tensors similar to Observation.as_input()."""
+    """Helper to create mock Observation objects."""
     observations = []
     for _ in range(batch_size):
-      frame = torch.randn(3, 84, 84) if has_frame else torch.tensor(())
-      dense = torch.randn(4) if has_dense else torch.tensor(())
-      observations.append((frame, dense))
+      frame = np.random.randn(3, 84, 84).astype(
+          np.float32) if has_frame else None
+      dense = np.random.randn(4).astype(np.float32) if has_dense else None
+      observations.append(Observation(frame=frame, dense=dense))
     return observations
 
   def test_prioritized_buffer_initialization(self):
@@ -459,6 +462,13 @@ class TestReplayBufferEdgeCases(unittest.TestCase):
     self.mock_summary_writer = Mock()
     self.config = {'size': 10}
 
+  def _create_mock_observation(self, has_frame=True, has_dense=True):
+    """Helper to create mock Observation objects."""
+    frame = np.random.randn(3, 84, 84).astype(
+        np.float32) if has_frame else None
+    dense = np.random.randn(4).astype(np.float32) if has_dense else None
+    return Observation(frame=frame, dense=dense)
+
   def test_empty_tensor_handling(self):
     """Test that replay buffer handles empty tensors correctly."""
     replay_buffer = UniformExperienceReplayBuffer(
@@ -466,61 +476,24 @@ class TestReplayBufferEdgeCases(unittest.TestCase):
         device=self.device,
         summary_writer=self.mock_summary_writer)
 
-    # Test with completely empty tensors
-    empty_frame = torch.tensor(())
-    empty_dense = torch.tensor(())
-    obs = (empty_frame, empty_dense)
-    next_obs = (empty_frame, empty_dense)
+    # Test with observations that have no frame and no dense (which isn't actually valid for Observation)
+    # Instead, test with frame-only or dense-only observations
+    obs = self._create_mock_observation(has_frame=True, has_dense=False)
+    next_obs = self._create_mock_observation(has_frame=True, has_dense=False)
 
     replay_buffer.append(obs, 0, 1.0, next_obs, False)
     self.assertEqual(len(replay_buffer), 1)
 
-    # Sample and verify empty tensors are handled
+    # Sample and verify tensors are handled correctly
     all_obs, all_actions, all_rewards, all_next_obs, all_done = replay_buffer.sample(
         1)
     frames, dense = all_obs
     next_frames, next_dense = all_next_obs
 
-    self.assertEqual(frames.numel(), 0)
-    self.assertEqual(dense.numel(), 0)
-    self.assertEqual(next_frames.numel(), 0)
+    self.assertGreater(frames.numel(), 0)  # Should have frame data
+    self.assertEqual(dense.numel(), 0)  # Should have no dense data
+    self.assertGreater(next_frames.numel(), 0)
     self.assertEqual(next_dense.numel(), 0)
-
-  def test_mixed_observation_types_error_prevention(self):
-    """Test handling of mixed observation types within single buffer."""
-    replay_buffer = UniformExperienceReplayBuffer(
-        config=self.config,
-        device=self.device,
-        summary_writer=self.mock_summary_writer)
-
-    # Add multiple observations to ensure we get mixed types when sampling
-    frame_dense_obs = (torch.randn(3, 84, 84), torch.randn(4))
-    frame_only_obs = (torch.randn(3, 84, 84), torch.tensor(()))
-
-    # Add several of each type to increase chances of sampling mixed types
-    for _ in range(5):
-      replay_buffer.append(frame_dense_obs, 0, 1.0, frame_dense_obs, False)
-    for _ in range(5):
-      replay_buffer.append(frame_only_obs, 1, 1.0, frame_only_obs, False)
-
-    # Try sampling many times - should eventually get mixed types and raise error
-    error_raised = False
-    for attempt in range(100):  # Try many times to get mixed sampling
-      try:
-        all_obs, all_actions, all_rewards, all_next_obs, all_done = replay_buffer.sample(
-            6)
-        # If we get here without an error, the batch happened to be homogeneous
-      except ValueError as e:
-        if "Mixed observation types not supported" in str(e):
-          error_raised = True
-          break
-        else:
-          raise  # Re-raise if it's a different ValueError
-
-    # Should have raised the mixed types error at least once
-    self.assertTrue(
-        error_raised,
-        "Expected ValueError for mixed observation types was never raised")
 
   def test_large_batch_sampling(self):
     """Test sampling when batch size equals buffer size."""
@@ -531,7 +504,7 @@ class TestReplayBufferEdgeCases(unittest.TestCase):
 
     # Fill buffer to capacity
     for i in range(5):
-      obs = (torch.randn(3, 84, 84), torch.randn(4))
+      obs = self._create_mock_observation(has_frame=True, has_dense=True)
       replay_buffer.append(obs, i, float(i), obs, False)
 
     # Sample entire buffer - note that random.choices allows duplicates
@@ -552,7 +525,7 @@ class TestReplayBufferEdgeCases(unittest.TestCase):
 
     # Add experiences and verify logging
     for i in range(3):
-      obs = (torch.randn(3, 84, 84), torch.randn(4))
+      obs = self._create_mock_observation(has_frame=True, has_dense=True)
       replay_buffer.append(obs, i, float(i), obs, False)
 
     # Verify summary writer was called for each append
@@ -574,9 +547,9 @@ class TestReplayBufferEdgeCases(unittest.TestCase):
         device=device,
         summary_writer=self.mock_summary_writer)
 
-    # Add experiences with tensors on different devices
-    obs = (torch.randn(3, 84, 84), torch.randn(4))
-    next_obs = (torch.randn(3, 84, 84), torch.randn(4))
+    # Add experiences with Observation objects
+    obs = self._create_mock_observation(has_frame=True, has_dense=True)
+    next_obs = self._create_mock_observation(has_frame=True, has_dense=True)
 
     replay_buffer.append(obs, 0, 1.0, next_obs, False)
 
@@ -604,8 +577,8 @@ class TestReplayBufferEdgeCases(unittest.TestCase):
 
     # Add many experiences
     for i in range(20):
-      obs = (torch.randn(3, 84, 84), torch.randn(4))
-      next_obs = (torch.randn(3, 84, 84), torch.randn(4))
+      obs = self._create_mock_observation(has_frame=True, has_dense=True)
+      next_obs = self._create_mock_observation(has_frame=True, has_dense=True)
       replay_buffer.append(obs, i % 4, float(i), next_obs, i % 5 == 0)
 
     # Sample different batch sizes and verify consistency

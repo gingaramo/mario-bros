@@ -12,6 +12,7 @@ from .render import render
 from .keyboard_controls import wait_for_frame_step
 from .training_utils import create_summary_writer
 from .agent_utils import execute_agent_step, create_agent
+from .evaluate import evaluate_agent
 
 
 def run_sync_training(config):
@@ -30,6 +31,9 @@ def run_sync_training(config):
   env = create_environment(config['env'], 'asynchronous')
   summary_writer = create_summary_writer(config)
   agent = create_agent(config, env, summary_writer)
+  eval_every_n_trained_experiences = config['env'][
+      'eval_every_n_trained_experiences']
+  eval_trained_experiences_left = eval_every_n_trained_experiences
 
   train_pbar = tqdm(total=config['env']['num_steps'] //
                     config['env']['num_envs'],
@@ -70,6 +74,21 @@ def run_sync_training(config):
       if trained_experiences:
         ProfileScope.add_metadata('batch_size', trained_experiences)
         train_pbar.update(trained_experiences)
+        eval_trained_experiences_left -= trained_experiences
+
+    if eval_trained_experiences_left <= 0:
+      eval_trained_experiences_left = eval_every_n_trained_experiences
+      agent.save_checkpoint()
+      print()
+      print("======Starting evaluation======")
+      print()
+      accumulated_reward, episode_steps = evaluate_agent(
+          config, config['env']['eval_episodes'])
+      summary_writer.add_histogram('Eval/Reward', np.array(accumulated_reward))
+      summary_writer.add_histogram('Eval/Steps', np.array(episode_steps))
+      print()
+      print("======Finished evaluation")
+      print()
 
   print("Maximum number of steps reached.")
 

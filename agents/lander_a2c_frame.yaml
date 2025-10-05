@@ -12,33 +12,31 @@ env:
     wind_power: 15.0
     turbulence_power: 1.5
   env_wrappers:
-    #- PreprocessFrameEnv
-    # - HistoryEnv
     - CaptureRenderFrameEnv
-    #- ReturnActionEnv
+    - PreprocessFrameEnv
+    - ReturnActionEnv
+    - HistoryEnv
+
     
   ObservationWrapper:
-    input: dense
+    input: frame
   CaptureRenderFrameEnv:
-    mode: capture  # Options: 'capture', 'replace'
+    mode: replace  # Options: 'capture', 'replace'
   PreprocessFrameEnv:
     resize_shape: [84, 84]
     grayscale: true
     normalize: true
   HistoryEnv:
     history_length: 4
-  num_envs: 32
+  num_envs: 4
 
   env_action_labels: [NOOP, LEFT, MAIN, RIGHT]
   num_steps: 9_500_000
   headless: false
 
-  eval_episodes: 100
-  eval_every_n_trained_experiences: 10000
-
 agent:
   type: policy
-  name: lander_a2c_bis
+  name: lander_a2c_frame_exaggerated
   gamma: 0.99
 
   loss: mse
@@ -46,8 +44,8 @@ agent:
   # Optimizer settings
   optimizer: adam
   clip_grandients: 10.0
-  learning_rate: 0.0003
-  entropy_coeff: 0.1
+  learning_rate: 0.00001
+  entropy_coeff: 1.0
   lr_scheduler:
     type: lr_scheduler.LinearLR
     args:
@@ -62,10 +60,15 @@ agent:
 
   network:
     use_residual: true
-    torso:
-      hidden_layers: [32, 32]
-    actor:
-      hidden_layers: [32, 32]
-    critic:
-      hidden_layers: [32, 32]
+    convolution:
+      type: 2d
+      kernel_sizes: [8, 4, 3]
+      channels: [32, 64, 64]
+      strides: [4, 2, 1]
 
+    torso:
+      hidden_layers: [1024, 1024, 1024]
+    actor:
+      hidden_layers: [1024, 1024]
+    critic:
+      hidden_layers: [1024, 1024]
