@@ -34,7 +34,7 @@ env:
   headless: false
 
   eval_episodes: 100
-  eval_every_n_trained_experiences: 10000
+  eval_every_n_trained_experiences: 100000
 
 agent:
   type: policy
@@ -58,7 +58,7 @@ agent:
   batch_size: 128
   action_selection: max
 
-  checkpoint_every_n_replays: 100
+  checkpoint_every_n_replays: 1000
 
   network:
     use_residual: true

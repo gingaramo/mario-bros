@@ -127,14 +127,19 @@ class PolicyAgent(Agent):
   def __init__(self, env, device, summary_writer, config):
     super().__init__(env, device, summary_writer, config)
 
-  def create_models(self, env, config):
+  def load_or_init_state(self, env, config, checkpoint_dict):
     mock_observation, _ = env.reset()
     self.policy = Policy(env.action_space.nvec[-1], mock_observation,
                          config['network'])
-    if os.path.exists(self.checkpoint_path):
-      self.policy.load_state_dict(
-          torch.load(self.checkpoint_path, map_location=self.device))
     self.policy.to(self.device)
+    if checkpoint_dict is not None:
+      self.policy.load_state_dict(checkpoint_dict['policy'])
+
+    return lambda: {
+        'policy': self.policy.state_dict(),
+    }
+
+  def parameters_to_optimize(self):
     return self.policy.parameters()
 
   def get_action(self, observation: Observation) -> tuple[int, np.ndarray]:
@@ -145,9 +150,6 @@ class PolicyAgent(Agent):
       actions = m.sample().cpu().numpy()
 
     return actions, probs.detach().cpu().numpy()
-
-  def save_models(self):
-    torch.save(self.policy.state_dict(), self.checkpoint_path)
 
 
 class REINFORCEAgent(PolicyAgent):

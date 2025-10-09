@@ -25,6 +25,18 @@ class ValueAgent(Agent):
         'replays_until_target_update', 0)
     self.target_updates_counter = 0
 
+    # Epsilon parameters.
+    self.initial_epsilon = config.get('initial_epsilon', 1.0)
+    self.epsilon_min = config.get('epsilon_min', 0.01)
+    self.epsilon_exponential_decay = config.get('epsilon_exponential_decay',
+                                                None)
+    self.epsilon_linear_decay = config.get('epsilon_linear_decay', None)
+
+    # Action selection parameters.
+    self.action_selection = config.get('action_selection', 'max')
+    self.action_selection_temperature = config.get(
+        'action_selection_temperature', 1.0)
+
     replay_buffer_config = config['replay_buffer']
     if replay_buffer_config['type'] == 'uniform':
       self.replay_buffer = UniformExperienceReplayBuffer(
@@ -55,36 +67,32 @@ class ValueAgent(Agent):
     self.model_lock = threading.Lock()
     self.replay_buffer_lock = threading.Lock()
 
-  def create_models(self, env, config):
-    if 'dqn' in config['network'] or 'dueling_dqn' in config['network']:
-      mock_observation, _ = env.reset()
-      if 'dqn' in config['network']:
-        self.model = DQN(self.action_size, mock_observation,
-                         config['network']['dqn'])
-        self.target_model = DQN(self.action_size, mock_observation,
-                                config['network']['dqn'])
-      elif 'dueling_dqn' in config['network']:
-        self.model = DuelingDQN(self.action_size, mock_observation,
-                                config['network']['dueling_dqn'])
-        self.target_model = DuelingDQN(self.action_size, mock_observation,
-                                       config['network']['dueling_dqn'])
+  def load_or_init_state(self, env, config, checkpoint_dict):
+    assert 'dqn' in config['network'] or 'dueling_dqn' in config[
+        'network'], "Invalid network configuration"
 
-      if self.apply_noisy_network:
-        self.model = replace_linear_with_noisy(self.model)
-        self.target_model = replace_linear_with_noisy(self.target_model)
-      if os.path.exists(self.checkpoint_path):
-        self.model.load_state_dict(
-            torch.load(self.checkpoint_path, map_location=self.device))
-      self.target_model.load_state_dict(self.model.state_dict())
-      # Set the target model to eval mode and keep it there
-      self.target_model.eval()
-      # Ensure target model parameters are not updated
-      for param in self.target_model.parameters():
-        param.requires_grad = False
-    else:
-      raise ValueError("Network configuration must include a valid model.")
-    self.model.to(self.device)
-    self.target_model.to(self.device)
+    mock_observation, _ = env.reset()
+    if 'dqn' in config['network']:
+      self.model = DQN(self.action_size, mock_observation,
+                       config['network']['dqn'])
+      self.target_model = DQN(self.action_size, mock_observation,
+                              config['network']['dqn'])
+    elif 'dueling_dqn' in config['network']:
+      self.model = DuelingDQN(self.action_size, mock_observation,
+                              config['network']['dueling_dqn'])
+      self.target_model = DuelingDQN(self.action_size, mock_observation,
+                                     config['network']['dueling_dqn'])
+
+    # Noisy network initialization.
+    if config.get('apply_noisy_network', False):
+      self.model = replace_linear_with_noisy(self.model)
+      self.target_model = replace_linear_with_noisy(self.target_model)
+
+    # Set the target model to eval mode and keep it there
+    self.target_model.eval()
+    # Ensure target model parameters are not updated
+    for param in self.target_model.parameters():
+      param.requires_grad = False
 
     # Curiosity module
     self.curiosity_module = None
@@ -94,6 +102,19 @@ class ValueAgent(Agent):
       self.curiosity_module.to(self.device)
       print("Curiosity module initialized.")
 
+    # Checkpointing
+    if checkpoint_dict is not None:
+      self.model.load_state_dict(checkpoint_dict['model'])
+      self.target_model.load_state_dict(checkpoint_dict['model'])
+
+    self.model.to(self.device)
+    self.target_model.to(self.device)
+
+    return lambda: {
+        'model': self.model.state_dict(),
+    }
+
+  def parameters_to_optimize(self):
     return self.model.parameters()
 
   def remember(self, observation: List[Tuple[List, List]], action: List[int],
@@ -239,8 +260,17 @@ class ValueAgent(Agent):
           training=False)
       return curiosity_reward
 
-  def save_models(self):
-    torch.save(self.model.state_dict(), self.checkpoint_path)
+  @property
+  def epsilon(self):
+    if self.epsilon_exponential_decay:
+      eps = self.initial_epsilon * (self.epsilon_exponential_decay**
+                                    self.global_step)
+    elif self.epsilon_linear_decay:
+      eps = self.initial_epsilon - (self.epsilon_linear_decay *
+                                    self.global_step)
+    else:
+      eps = 0.0
+    return max(eps, self.epsilon_min)
 
   def get_action(self,
                  observation: Observation) -> Tuple[np.ndarray, np.ndarray]:
@@ -250,7 +280,30 @@ class ValueAgent(Agent):
       action: The action to take, either random or based on the model's prediction.
       act_values: The Q-values predicted by the model for the current observation.
     """
-    q_values = self.model(observation.as_input(self.device))
-    q_values_np = q_values.detach().cpu().numpy()
-    actions = np.argmax(q_values_np, axis=1)
-    return actions, q_values_np
+
+    assert self.action_selection in [
+        'max', 'random'
+    ], f"Unsupported action selection method {self.action_selection}. Supported: 'max', 'random'."
+
+    if self.action_selection == 'random':
+      action = np.random.randint(low=0,
+                                 high=self.action_size,
+                                 size=self.num_envs)
+      act_values = np.zeros((self.num_envs, self.action_size))
+      return action.astype(int), act_values
+    elif self.action_selection == 'max':
+      with torch.no_grad(), ProfileScope("model_inference"):
+        q_values = self.model(observation.as_input(self.device))
+        q_values_np = q_values.detach().cpu().numpy()
+        best_actions = np.argmax(q_values_np, axis=1).astype(int)
+
+    # Perform epsilon-greedy action selection
+    action = np.zeros(self.num_envs)
+    random_action_idx = np.random.rand(self.num_envs) < self.epsilon
+    action[random_action_idx] = np.random.randint(
+        low=0, high=self.action_size, size=self.num_envs)[random_action_idx]
+    action[~random_action_idx] = best_actions[~random_action_idx]
+
+    self.summary_writer.add_scalar("Action/Epsilon", self.epsilon)
+
+    return action, q_values_np

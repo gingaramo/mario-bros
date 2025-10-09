@@ -33,6 +33,9 @@ env:
   num_steps: 5_000_000
   headless: false
 
+  eval_every_n_trained_experiences: 100_000
+  eval_episodes: 10
+
 agent:
   type: value
   name: lander_baseline

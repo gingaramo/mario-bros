@@ -32,24 +32,16 @@ class Agent:
     self.num_envs = env.unwrapped.num_envs
     self.device = device
     self.summary_writer = summary_writer
-    self.batch_size = config['batch_size']
 
+    # Episodic or not parameters.
     self.gamma = config['gamma']
-    self.epsilon_min = config.get('epsilon_min', 0.01)
-    self.epsilon_exponential_decay = config.get('epsilon_exponential_decay',
-                                                None)
-    self.epsilon_linear_decay = config.get('epsilon_linear_decay', None)
+
+    # Checkpointing parameters
     self.replays_until_checkpoint = config['checkpoint_every_n_replays']
 
-    # Action selection parameters.
-    self.action_selection = config.get('action_selection', 'max')
-    self.action_selection_temperature = config.get(
-        'action_selection_temperature', 1.0)
-
     # Learning parameters.
+    self.batch_size = config['batch_size']
     self.learning_rate = config['learning_rate']
-    self.apply_noisy_network = config.get('apply_noisy_network', False)
-
     if config['loss'] == 'mse':
       self.get_loss = nn.MSELoss
     elif config['loss'] == 'smooth_l1':
@@ -59,31 +51,29 @@ class Agent:
     else:
       raise ValueError(f"Unsupported loss function: {config['loss']}")
 
-    # Checkpoint functionality
+    # Restore checkpoint dictionary.
     _path = os.path.join("checkpoint/", config['name'])
-    if not os.path.exists(_path):
-      os.makedirs(_path)
-    self.checkpoint_path = os.path.join(_path, 'state_dict.pkl')
+    os.makedirs(_path, exist_ok=True)
     self.checkpoint_state_path = os.path.join(_path, "state.pkl")
-    if (not os.path.exists(self.checkpoint_path)
-        or not os.path.exists(self.checkpoint_state_path)):
-      self.episodes_played = 0
-      self.global_step = 0
-      self.trained_experiences = 0
-      self.initial_epsilon = config.get('epsilon', 1.0)
-    else:
+    checkpoint_dict = None
+    if os.path.exists(self.checkpoint_state_path):
       with open(self.checkpoint_state_path, "rb") as f:
-        state = pickle.load(f)
-        self.episodes_played = state['episodes_played']
-        self.global_step = state['global_step']
-        self.trained_experiences = state['trained_experiences']
-        self.initial_epsilon = state['initial_epsilon']
-        print(
-            f'Resuming from checkpoint. Episode {self.episodes_played}, global step {self.global_step}, trained experiences {self.trained_experiences}'
-        )
+        checkpoint_dict = pickle.load(f)
+        print(f"Restored checkpoint from {self.checkpoint_state_path}")
 
+    # Initialize state from all subclasses (possibly from checkpoint).
+    self.checkpoint_callbacks = []
+    already_called = set()  # To avoid calling the same method multiple times.
+    for subclass in type(self).__mro__:
+      if (hasattr(subclass, 'load_or_init_state')
+          and subclass.load_or_init_state not in already_called):
+        self.checkpoint_callbacks.append(
+            subclass.load_or_init_state(self, env, config, checkpoint_dict))
+        already_called.add(subclass.load_or_init_state)
+
+    # Optimizer and scheduler initialization.
     if config['optimizer'] == 'adam':
-      self.optimizer = optim.Adam(self.create_models(env, config),
+      self.optimizer = optim.Adam(self.parameters_to_optimize(),
                                   lr=self.learning_rate)
     else:
       raise ValueError(
@@ -95,31 +85,51 @@ class Agent:
           f"self.lr_scheduler = {config['lr_scheduler']['type']}(self.optimizer, **{config['lr_scheduler']['args']})"
       )
 
-  @property
-  def epsilon(self):
-    if self.epsilon_exponential_decay:
-      eps = self.initial_epsilon * (self.epsilon_exponential_decay**
-                                    self.global_step)
-    elif self.epsilon_linear_decay:
-      eps = self.initial_epsilon - (self.epsilon_linear_decay *
-                                    self.global_step)
-    else:
-      eps = 0.0
-    return max(eps, self.epsilon_min)
-
   def save_checkpoint(self):
-    self.save_models()
+    print(f"Saving checkpoint....")
+    checkpoint = {}
+
+    for callback in self.checkpoint_callbacks:
+      state = callback()
+      assert state.keys().isdisjoint(checkpoint.keys(
+      )), f"Checkpoint state keys overlap. {state.keys() & checkpoint.keys()}"
+      checkpoint.update(state)
+
     with open(self.checkpoint_state_path, "wb") as f:
-      pickle.dump(
-          {
-              'episodes_played': self.episodes_played,
-              'global_step': self.global_step,
-              'trained_experiences': self.trained_experiences,
-              'initial_epsilon': self.initial_epsilon,
-          }, f)
+      pickle.dump(checkpoint, f)
     self.summary_writer.flush()
 
-  def create_models(self, env, config):
+  def load_or_init_state(self, env, config, checkpoint_dict=None):
+    """Initializes the agent's variables, including model parameters.
+     
+    This is initialization required for checkpointing, i.e. not in config and
+    not static throughout training.
+
+    **All subclasses are expected to implement this method.**
+
+    Args:
+      env: The environment to be used by the agent.
+      config: The configuration dictionary.
+      checkpoint_dict: If not None, a dictionary with the state to be restored.
+    
+    Returns:
+      A callable that returns a dictionary of state key-value pairs, needed to
+      resume execution by the agent (the the to-checkpoint lambda).
+    """
+    if checkpoint_dict is None:
+      self.global_step = 0
+      self.trained_experiences = 0
+    else:
+      self.global_step = checkpoint_dict['global_step']
+      self.trained_experiences = checkpoint_dict['trained_experiences']
+
+    return lambda: {
+        'global_step': self.global_step,
+        'trained_experiences': self.trained_experiences,
+    }
+
+  def parameters_to_optimize(self):
+    """Returns the model parameters to be optimized."""
     raise NotImplementedError("Subclasses should implement this method.")
 
   def remember(self, observation: Tuple[List, List], action: int,
@@ -139,30 +149,10 @@ class Agent:
     self.global_step += self.num_envs
     self.summary_writer.set_global_step(self.global_step)
 
-    assert self.action_selection in [
-        'max', 'random'
-    ], f"Unsupported action selection method {self.action_selection}. Supported: 'max', 'random'."
+    with torch.no_grad(), ProfileScope("model_inference"):
+      actions, values = self.get_action(observation)
 
-    if self.action_selection == 'random':
-      action = np.random.randint(low=0,
-                                 high=self.action_size,
-                                 size=self.num_envs)
-      act_values = np.zeros((self.num_envs, self.action_size))
-      return action.astype(int), act_values
-    elif self.action_selection == 'max':
-      with torch.no_grad(), ProfileScope("model_inference"):
-        actions, values = self.get_action(observation)
-
-    # Perform epsilon-greedy action selection
-    action = np.zeros(self.num_envs)
-    random_action_idx = np.random.rand(self.num_envs) < self.epsilon
-    action[random_action_idx] = np.random.randint(
-        low=0, high=self.action_size, size=self.num_envs)[random_action_idx]
-    action[~random_action_idx] = actions[~random_action_idx]
-
-    self.summary_writer.add_scalar("Action/Epsilon", self.epsilon)
-
-    return action.astype(int), values
+    return actions.astype(int), values
 
   def clip_gradients(self, parameters):
     if 'clip_gradients' in self.config:
@@ -176,6 +166,7 @@ class Agent:
       self.trained_experiences += trained_experiences
       self.lr_scheduler.step() if self.lr_scheduler else None
 
+      # TODO: Move checkpoint functionality into the outer training loop.
       self.replays_until_checkpoint -= 1
       if self.replays_until_checkpoint <= 0:
         with ProfileScope('checkpoint'):
@@ -186,6 +177,3 @@ class Agent:
       self.summary_writer.add_scalar("Replay/TrainedExperiences",
                                      self.trained_experiences)
     return trained_experiences
-
-  def save_models(self):
-    raise NotImplementedError("Subclasses should implement this method.")
