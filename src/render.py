@@ -155,8 +155,8 @@ def frame_with_q_values(next_state, q_values, action, labels, upscale_factor):
   next_state_bgr = cv2.cvtColor(next_state, cv2.COLOR_RGB2BGR)
   # Upscale the frame to 2x before rendering Q-values
   next_state_up = cv2.resize(next_state_bgr,
-                             (next_state_bgr.shape[1] * upscale_factor,
-                              next_state_bgr.shape[0] * upscale_factor),
+                             (int(next_state_bgr.shape[1] * upscale_factor),
+                              int(next_state_bgr.shape[0] * upscale_factor)),
                              interpolation=cv2.INTER_NEAREST)
 
   # Normalize and render Q-values
