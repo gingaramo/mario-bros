@@ -74,3 +74,24 @@ To render profiles that allow you to see a timeline of events, for example when 
 stages (training, env_step, etc), you can capture a profile with Shift+P and save it with Shift+O while running,
 and run `src/profile_timeline.py` passing the suffix of your agent's name as `--profile` flag. The output will
 look something like [this](./timeline_output/timeline.html)
+
+# Dashboard
+
+By default frame windows will be rendered using cv2 library, but you can also view training
+frames in real-time via web browser, whether remotely or locally:
+
+1. **Start the dashboard server:**
+   ```bash
+   python -m src.dashboard
+   ```
+
+2. **Start training**
+   ```bash
+   python main.py --config agents/mario/mario.yaml --use_dashboard  # key-flag
+   ```
+
+2. **Open browser to** `http://{remote-host|localhost}:8080`
+
+The dashboard receives frames via UDP and streams them to your browser via WebSocket. 
+Skipping more complex setups needing X-session forwarding and reducing slowdowns caused by
+it when trainer is running remotely.

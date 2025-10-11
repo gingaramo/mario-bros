@@ -1,11 +1,11 @@
-device: mps
+device: cuda
 
 seed: 42
 render_upscale_factor: 2
-render_layout: [3, 6]
+render_layout: [1, 2]
 
 env:
-  env_name: SuperMarioBros-v2
+  env_name: SuperMarioBros-v0
   env_wrappers:
     - RepeatActionEnv
     - CaptureRenderFrameEnv
@@ -27,28 +27,30 @@ env:
     grayscale: true
     normalize: true
   HistoryEnv:
-    history_length: 3
+    history_length: 8
 
   env_action_labels: ['NOOP', 'right', 'right-jump', 'right-run', 'right-jump-run', 'jump', 'left']
-  num_episodes: 10000000
-  num_steps: 10000000
-  max_steps_per_episode: 10000
+  num_steps: 100_000_000
+  max_steps_per_episode: 10_000
   headless: false
-  num_envs: 18
+  num_envs: 8
+  eval_every_n_trained_experiences: 1_000_000
+  eval_episodes: 10
 
 agent:
   name: mario
+  type: value
   gamma: 0.99
   apply_noisy_network: true
 
   epsilon: 0.9
-  epsilon_min: 0.02
-  epsilon_linear_decay: 0.00000025
+  epsilon_min: 0.1
+  epsilon_linear_decay: 0.00000125
 
-  batch_size: 256
+  batch_size: 512
   min_memory_size: 512
   loss: huber
-  clip_gradients: 100.0
+  clip_gradients: 10.0
 
   # Optimizer settings
   optimizer: adam
@@ -64,15 +66,13 @@ agent:
   double_dqn: true
 
   replay_buffer:
-    type: prioritized
-    size: 65536
-    alpha: 0.6
-    beta: 0.4
+    type: uniform
+    size: 200_000
     beta_annealing_steps: 1000000
 
   replay_every_n_steps: 1
-  replays_until_target_update: 200
-  checkpoint_every_n_replays: 500
+  replays_until_target_update: 1_000
+  checkpoint_every_n_replays: 500_000
 
   network:
     dueling_dqn:
@@ -82,10 +82,5 @@ agent:
         channels: [32, 64, 64]
         strides: [4, 2, 1]
 
-      value_hidden_layers: [64,64,64]
-      advantage_hidden_layers: [64,64,64]
-
-  disabled_curiosity:
-    hidden_layers_dim: [200, 200]
-    curiosity_reward_weight: 0.4
-    curiosity_reward_exponent: 0.4
+      value_hidden_layers: [64,64,64,64]
+      advantage_hidden_layers: [64,64,64,64]

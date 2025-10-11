@@ -11,6 +11,7 @@ from src.evaluate import evaluate_agent
 from src.profiler import execution_profiler_singleton
 from src.sync_training import run_sync_training
 from src.training_utils import setup_training_environment
+from src.render import set_dashboard_mode
 
 # Register environments
 gym.register_envs(ale_py)
@@ -44,6 +45,10 @@ def main(args):
   # Setup profiling.
   global execution_profiler_singleton
   execution_profiler_singleton.set_name(f"{config['agent']['name']}")
+  
+  # Enable dashboard mode.
+  if args.use_dashboard:
+    set_dashboard_mode(enabled=True, trainer_name=config['agent']['name'], quality=args.jpeg_quality)
 
   # Launch training based on mode
   execution_mode = config.get('execution_mode', 'synchronous')
@@ -94,6 +99,17 @@ def create_argument_parser():
       '--restart',
       action='store_true',
       help='Restart training from scratch, clearing existing checkpoints')
+
+  parser.add_argument(
+      '--use_dashboard',
+      action='store_true',
+      help='Enable the training dashboard for real-time visualization')
+
+  parser.add_argument(
+      '--jpeg_quality',
+      type=int,
+      default=85,
+      help='JPEG quality for the training dashboard (1-100), 85 default.')
 
   return parser
 

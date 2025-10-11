@@ -19,9 +19,10 @@ dependencies:
     - -e git+https://github.com/Kautenja/nes-py.git@refs/pull/94/head#egg=nes-py
     - -e git+https://github.com/Kautenja/gym-super-mario-bros.git@refs/pull/127/head#egg=gym-super-mario-bros
     - keyboard
-    - "--find-links https://download.pytorch.org/whl/torch/"
-    - torch==2.6.0; sys_platform != "linux" and sys_platform != "win32"
-    - torch==2.6.0+cpu; sys_platform == "linux" or sys_platform == "win32"
+    - torch==2.6.0+cpu; sys_platform == "darwin"
+    # RTX 5060 Ti (sm_120/Blackwell) requires CUDA 12.8+
+    - --index-url https://download.pytorch.org/whl/cu128
+    - torch; sys_platform == "linux" or sys_platform == "win32"
     - torchinfo
     - swig
     - umap-learn
@@ -30,4 +31,5 @@ dependencies:
     - Pillow
     - nbformat>=4.2.0 
     - dash
+    - aiohttp
     

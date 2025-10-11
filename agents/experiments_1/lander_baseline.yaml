@@ -1,8 +1,9 @@
-device: mps
+device: cuda
 
 seed: 42
 execution_mode: synchronous
-
+render_upscale_factor: 0.6
+render_layout: [2,2]
 env:
   env_name: "LunarLander-v3"
   env_kwargs:
@@ -47,7 +48,7 @@ agent:
 
   # Optimizer settings
   optimizer: adam
-  learning_rate: 0.0001
+  learning_rate: 0.001
   lr_scheduler:
     type: lr_scheduler.LinearLR
     args:
@@ -65,7 +66,7 @@ agent:
     size: 100_000
 
   replays_until_target_update: 5
-  checkpoint_every_n_replays: 100
+  checkpoint_every_n_replays: 1000
 
   network:
     dqn:

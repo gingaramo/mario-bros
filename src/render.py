@@ -5,6 +5,9 @@ import math
 
 HEADLESS_MODE = False
 RENDERING_ENABLED = True
+USE_DASHBOARD = False
+_dashboard_sender = None
+_trainer_name = None
 
 
 def set_headless_mode(value):
@@ -22,6 +25,62 @@ def set_rendering_enabled(value):
   global RENDERING_ENABLED
   print(f"Rendering enabled: {value}")
   RENDERING_ENABLED = value
+
+
+def set_dashboard_mode(enabled, trainer_name=None, host='localhost', port=9999, quality=85):
+  """
+  Enable or disable dashboard mode for non-blocking rendering.
+  
+  Args:
+    enabled: True to send frames to dashboard, False to use cv2.imshow
+    trainer_name: Name of the trainer (e.g., config['agent']['name'])
+    host: Dashboard server hostname
+    port: Dashboard UDP port
+    quality: JPEG compression quality (1-100, default 85)
+  """
+  global USE_DASHBOARD
+  global _dashboard_sender
+  global _trainer_name
+  
+  USE_DASHBOARD = enabled
+  
+  if enabled:
+    if trainer_name is None:
+      raise ValueError("trainer_name is required when enabling dashboard mode")
+    
+    _trainer_name = trainer_name
+    
+    if _dashboard_sender is None or _dashboard_sender.trainer_name != trainer_name:
+      if _dashboard_sender is not None:
+        _dashboard_sender.close()
+      
+      from src.dashboard import FrameSender
+      _dashboard_sender = FrameSender(trainer_name=trainer_name, host=host, port=port, quality=quality)
+      print(f"Dashboard mode enabled for trainer '{trainer_name}' - sending frames to {host}:{port}")
+      print(f"  JPEG quality: {quality}")
+  elif not enabled and _dashboard_sender is not None:
+    _dashboard_sender.close()
+    _dashboard_sender = None
+    _trainer_name = None
+    print("Dashboard mode disabled")
+
+
+def _display_frame(window_name, frame):
+  """
+  Display a frame either via cv2.imshow or dashboard.
+  
+  Args:
+    window_name: Name/channel for the frame
+    frame: numpy array (BGR image)
+  """
+  global USE_DASHBOARD
+  global _dashboard_sender
+  
+  if USE_DASHBOARD and _dashboard_sender is not None:
+    _dashboard_sender.send_frame(frame, channel=window_name)
+  else:
+    cv2.imshow(window_name, frame)
+    cv2.waitKey(1)
 
 
 def should_render():
@@ -96,7 +155,7 @@ def maybe_render_dqn(x, side_input: torch.Tensor):
     cv2.putText(new_img, text, (10, stacked.shape[0] + 30),
                 cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
     stacked = new_img
-  cv2.imshow("Stacked Frames", stacked)
+  _display_frame("Stacked Frames", stacked)
 
 
 def frame_q_values_bar(q_values_norm,
@@ -198,8 +257,7 @@ def render(info, q_values, action, config, recording=None):
                 int(math.ceil(q_values.shape[0]**0.5)))
     final_frame = tile_frames_in_grid(frames[:layout[0] * layout[1]],
                                       layout[0], layout[1])
-    cv2.imshow("Frame with Q-values", final_frame)
-    cv2.waitKey(1)
+    _display_frame("Frame with Q-values", final_frame)
 
 
 def render_model_weights(model):
@@ -276,5 +334,4 @@ def render_model_weights(model):
               (255, 255, 255), 2)
 
   # Display the image
-  cv2.imshow("Model Weights Heatmap", display_img)
-  cv2.waitKey(1)
+  _display_frame("Model Weights Heatmap", display_img)
