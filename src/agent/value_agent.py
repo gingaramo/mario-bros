@@ -37,6 +37,7 @@ class ValueAgent(Agent):
     self.action_selection_temperature = config.get(
         'action_selection_temperature', 1.0)
 
+    self.batch_size = config['batch_size']
     replay_buffer_config = config['replay_buffer']
     if replay_buffer_config['type'] == 'uniform':
       self.replay_buffer = UniformExperienceReplayBuffer(
@@ -293,7 +294,7 @@ class ValueAgent(Agent):
       return action.astype(int), act_values
     elif self.action_selection == 'max':
       with torch.no_grad(), ProfileScope("model_inference"):
-        q_values = self.model(observation.as_input(self.device))
+        q_values = self.model(observation.as_input(self.device), render_input_frames=True)
         q_values_np = q_values.detach().cpu().numpy()
         best_actions = np.argmax(q_values_np, axis=1).astype(int)
 

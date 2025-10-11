@@ -283,13 +283,11 @@ class RepeatActionEnv(gym.vector.VectorWrapper):
     if np.any(terminated_or_truncated):
       reset_mask = np.zeros((num_envs, ), dtype=bool)
       reset_mask[list(terminated_or_truncated)] = True
-      obs, info = self.env.reset(options={'reset_mask': reset_mask})
+      obs, _ = self.env.reset(options={'reset_mask': reset_mask})
       obs = obs.as_list()
       for i in terminated_or_truncated:
         # Convert the observation to the expected Observation type
         ret_obs[i] = obs[i]
-        print(f"Resetting environment {i}: {ret_obs[i]}")
-        print(f"Environment {0}: {ret_obs[0]}")
 
     # TODO: info is not handled correctly in this impl, nobody should depend on it
     return merge_observations(

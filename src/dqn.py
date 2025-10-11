@@ -60,14 +60,14 @@ class BaseDQN(nn.Module):
 
   def forward(self,
               x: Tuple[torch.Tensor, torch.Tensor],
-              training: bool = False):
+              training: bool = False,
+              render_input_frames: bool = False) -> torch.Tensor:
     "The actual forward call for the DQN model."
     x, side_input = x
     # Render the side input if there's a frame.
-    if not training:
-      if x.numel() > 0:
-        render.maybe_render_dqn(
-            x[0], side_input[0] if side_input.numel() > 0 else torch.empty(()))
+    if render_input_frames and x.numel() > 0:
+      render.maybe_render_dqn(
+          x[0], side_input[0] if side_input.numel() > 0 else torch.empty(()))
 
     return self.forward_dqn(x, side_input, training=training)
 

@@ -8,7 +8,6 @@ import pickle
 import random
 import numpy as np
 import torch
-from .keyboard_controls import setup_interactive_controls
 from .tb_logging import CustomSummaryWriter
 
 # Constants
@@ -204,4 +203,3 @@ def setup_training_environment(config, config_file_path, restart_training):
   set_headless_mode(config['env'].get('headless', False))
 
   initialize_checkpoint_directory(config, config_file_path)
-  setup_interactive_controls()

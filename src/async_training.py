@@ -11,7 +11,6 @@ from src.agent.agent import Agent
 
 from .environment import create_environment
 from .render import render
-from .keyboard_controls import wait_for_frame_step
 from .training_utils import create_summary_writer
 from .agent_utils import execute_agent_step, create_agent
 from .profiler import ProfileScope
@@ -27,9 +26,8 @@ def async_worker_thread(config, agent, worker_id=0):
         worker_id (int): The ID of the worker thread
 
     Note:
-        This thread handles agent inference, environment interaction, rendering, and
-        keyboard controls. It runs independently from the training thread for better
-        performance.
+        This thread handles agent inference, environment interaction, and rendering.
+        It runs independently from the training thread for better performance.
     """
   pbar = tqdm(total=config['env']['num_steps'] /
               config['env'].get('num_env_workers', 1),
@@ -69,7 +67,6 @@ def async_worker_thread(config, agent, worker_id=0):
     # render GUI.
     if worker_id == 0:
       render(info, q_values, action, config)
-    wait_for_frame_step()  # Debug frame-by-frame stepping
 
   print("Maximum number of steps reached.")
 

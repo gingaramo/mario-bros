@@ -9,7 +9,6 @@ from src.profiler import ProfileScope
 
 from .environment import create_environment
 from .render import render
-from .keyboard_controls import wait_for_frame_step
 from .training_utils import create_summary_writer
 from .agent_utils import execute_agent_step, create_agent
 from .evaluate import evaluate_agent
@@ -67,7 +66,6 @@ def run_sync_training(config):
 
     # Render frames if rendering is enabled or recording is active
     render(info, q_values, action, config)
-    wait_for_frame_step()  # Debug frame-by-frame stepping
 
     with ProfileScope("agent_train"):
       trained_experiences = agent.train()

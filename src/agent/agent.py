@@ -40,7 +40,6 @@ class Agent:
     self.replays_until_checkpoint = config['checkpoint_every_n_replays']
 
     # Learning parameters.
-    self.batch_size = config['batch_size']
     self.learning_rate = config['learning_rate']
     if config['loss'] == 'mse':
       self.get_loss = nn.MSELoss
