@@ -146,12 +146,13 @@ def record_episode_statistics(summary_writer, done, truncated, info):
         Statistics are only recorded for environments where episodes
         have finished (either done or truncated).
     """
+  terminated_idx = 0
   for i in range(len(done)):
     if done[i] or truncated[i]:
       summary_writer.add_scalar("Episode/Reward",
-                                info['accumulated_reward'][i])
-      summary_writer.add_scalar("Episode/Steps", info['episode_steps'][i])
-
+                                info['terminated_accumulated_reward'][terminated_idx])
+      summary_writer.add_scalar("Episode/Steps", info['terminated_episode_steps'][terminated_idx])
+      terminated_idx += 1
 
 def create_summary_writer(config):
   """

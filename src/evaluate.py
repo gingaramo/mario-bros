@@ -26,7 +26,7 @@ def evaluate_agent(config,
         num_episodes (int): Number of episodes to evaluate
     """
   # Create environment, summary writer, and agent
-  env = create_environment(config['env'], 'asynchronous')
+  env = create_environment(config['env'])
   summary_writer = DummySummaryWriter()
   agent = create_agent(config, env, summary_writer)
 
@@ -46,18 +46,20 @@ def evaluate_agent(config,
       experience = execute_agent_step(action, lambda action: env.step(action),
                                       observation, agent.summary_writer)
 
-    (_, action, _, observation, done, info) = experience
+    (_, action, reward, observation, done, info) = experience
 
     # Store experience if we're not at the begining of an episode
+    terminated_idx = 0
     for i, don in enumerate(done):
       if don:
         evaluate_pbar.update(1)
-        accumulated_reward.append(info['accumulated_reward'][i])
-        episode_steps.append(info['episode_steps'][i])
+        accumulated_reward.append(info['terminated_accumulated_reward'][terminated_idx])
+        episode_steps.append(info['terminated_episode_steps'][terminated_idx])
+        terminated_idx += 1
         num_episodes -= 1
 
     # Render frames if rendering is enabled or recording is active
-    render(info, q_values, action, config)
+    render(info, q_values, action, reward, config)
 
   env.close()
   evaluate_pbar.close()

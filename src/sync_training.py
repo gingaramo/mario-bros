@@ -27,7 +27,7 @@ def run_sync_training(config):
         slower than async mode since environment stepping blocks training.
     """
   # Create environment, summary writer, and agent
-  env = create_environment(config['env'], 'asynchronous')
+  env = create_environment(config['env'])
   summary_writer = create_summary_writer(config)
   agent = create_agent(config, env, summary_writer)
   eval_every_n_trained_experiences = config['env'][
@@ -65,7 +65,7 @@ def run_sync_training(config):
     episode_start = done
 
     # Render frames if rendering is enabled or recording is active
-    render(info, q_values, action, config)
+    render(info, q_values, action, reward, config)
 
     with ProfileScope("agent_train"):
       trained_experiences = agent.train()

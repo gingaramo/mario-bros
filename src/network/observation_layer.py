@@ -43,9 +43,7 @@ class CNNObservationLayer(nn.Module):
       raise ValueError(
           f"Unsupported convolution type: {config['type']}. Supported: '2d', '3d'."
       )
-    # Technically channels_in will either be actual channels or stacked frames.
-    # Note that dim-0 is batch dimension given vectorized environments.
-    channels_in = mock_frame.shape[1] if len(mock_frame.shape) == 4 else 1
+    channels_in = mock_frame.shape[-3]
     for (channels_out, kernel_size, stride) in zip(config['channels'],
                                                    config['kernel_sizes'],
                                                    config['strides']):
@@ -68,4 +66,4 @@ class CNNObservationLayer(nn.Module):
       x = self.activation(conv(x))
 
     # Flatten but preserve batch dimension
-    return x.flatten(start_dim=1)
+    return x.flatten(start_dim=-2)

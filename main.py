@@ -4,6 +4,7 @@ import gymnasium as gym
 import gym_super_mario_bros  # Keep (environment registration)
 import ale_py
 import torch
+import torch.cuda.amp as amp
 
 from src.async_training import run_async_training
 from src.config import load_configuration
@@ -59,14 +60,24 @@ def main(args):
     print(f"Accumulated rewards: {accumulated_reward}")
     print(f"Episode steps: {episode_steps}")
 
-  if execution_mode == 'synchronous':
-    print("Running in synchronous mode.")
-    run_sync_training(config)
-  elif execution_mode == 'asynchronous':
-    print("Running in asynchronous mode.")
-    run_async_training(config)
+  def _run():
+    if execution_mode == 'synchronous':
+      print("Running in synchronous mode.")
+      run_sync_training(config)
+    elif execution_mode == 'asynchronous':
+      print("Running in asynchronous mode.")
+      run_async_training(config)
+    else:
+      raise ValueError(f"Unknown execution mode: {execution_mode}")
+  if config.get('use_cuda_amp', False):
+    assert config['device'] == 'cuda', "CUDA AMP requires CUDA device."
+    with torch.cuda.amp.autocast():
+      print(" [o] Using CUDA AMP for mixed precision training.")
+      _run()
   else:
-    raise ValueError(f"Unknown execution mode: {execution_mode}")
+    if config['device'] == 'cuda':
+      print(" [x] Using CUDA device for training. But not using CUDA AMP!")
+    _run()
 
 
 def create_argument_parser():

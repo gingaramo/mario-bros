@@ -1,6 +1,6 @@
 import gymnasium as gym
 from gymnasium.vector.vector_env import VectorEnv
-from gymnasium.vector import SyncVectorEnv
+from gymnasium.vector import AsyncVectorEnv
 from typing import Tuple, Optional, List
 from collections import deque
 import cv2
@@ -238,8 +238,10 @@ class PreprocessFrameEnv(gym.vector.VectorWrapper):
 class RepeatActionEnv(gym.vector.VectorWrapper):
   """
   Repeats the action given to step() as many times as configured.
-  Returns early if 'truncated' or 'done'. 
-  Returns latest 'state' and 'info' from step, and accumulated 'reward'.
+  Truncates episodes after terminated, so observation is always first env observation. 
+  Returns latest 'state' and 'info' from step, and accumulated 'reward', it also
+  returns any accumulated info from terminated or truncated episodes (where info key
+  contains 'terminated').
 
   config options:
     - num_repeat_action: int ; actions will be repeated this many times
@@ -263,11 +265,23 @@ class RepeatActionEnv(gym.vector.VectorWrapper):
     truncated = np.zeros((num_envs, ), dtype=bool)
     ret_obs = [None] * num_envs
     info = None
+    done_info = {}
     terminated_or_truncated = set()
     for _ in range(self.num_repeat_action):
       _obs, _reward, _terminated, _truncated, info = self.env.step(action)
+      # Each time that an environment is terminated or truncated, we receive their
+      # accumulated reward and episode steps in the info dictionary.
+      for key in info.keys():
+        if 'terminated' in key:
+          if key not in done_info:
+            done_info[key] = info[key]
+          else:
+            done_info[key] = np.concatenate((done_info[key], info[key]), axis=0)
+
       for i, (o, r, t, tr) in enumerate(
           zip(_obs.as_list(), _reward, _terminated, _truncated)):
+        assert i not in terminated_or_truncated or (i in terminated_or_truncated and not (t or tr)), \
+            "Environment should not be terminated or truncated more than once per step."
         if i in terminated_or_truncated:
           continue
         total_reward[i] += r
@@ -289,7 +303,10 @@ class RepeatActionEnv(gym.vector.VectorWrapper):
         # Convert the observation to the expected Observation type
         ret_obs[i] = obs[i]
 
-    # TODO: info is not handled correctly in this impl, nobody should depend on it
+    # Merge terminated info 
+    for key in done_info:
+      info[key] = done_info[key]
+
     return merge_observations(
         ret_obs), total_reward, terminated, truncated, info
 
@@ -543,13 +560,19 @@ class AccumulatedRewardEnv(gym.vector.VectorWrapper):
     self.accumulated_reward += reward
     info['accumulated_reward'] = self.accumulated_reward.copy()
     if np.any(terminated) or np.any(truncated):
+      info['terminated_accumulated_reward'] = self.accumulated_reward.copy()[terminated | truncated]
       # Reset accumulated reward for environments that are done or truncated
       self.accumulated_reward[terminated | truncated] = 0.0
     return obs, reward, terminated, truncated, info
 
-  def reset(self, **kwargs) -> Tuple[Observation, dict]:
-    obs, info = self.env.reset(**kwargs)
-    self.accumulated_reward = np.zeros(self.env.num_envs, dtype=np.float32)
+  def reset(self, options=None, **kwargs) -> Tuple[Observation, dict]:
+    if options and 'reset_mask' in options:
+      reset_mask = options['reset_mask']
+      self.accumulated_reward[reset_mask] = 0.0
+    else:
+      self.accumulated_reward = np.zeros(self.env.num_envs, dtype=np.float32)
+    obs, info = self.env.reset(options=options, **kwargs)
+
     return obs, info
 
 
@@ -567,17 +590,22 @@ class AccumulatedStepsEnv(gym.vector.VectorWrapper):
     self.episode_steps += 1
     info['episode_steps'] = self.episode_steps.copy()
     if np.any(terminated) or np.any(truncated):
+      info['terminated_episode_steps'] = self.episode_steps.copy()[terminated | truncated]
       # Reset episode steps for environments that are done or truncated
       self.episode_steps[terminated | truncated] = 0
     return obs, reward, terminated, truncated, info
 
-  def reset(self, **kwargs) -> Tuple[Observation, dict]:
-    obs, info = self.env.reset(**kwargs)
-    self.episode_steps = np.zeros(self.env.num_envs, dtype=np.int32)
+  def reset(self, options=None, **kwargs) -> Tuple[Observation, dict]:
+    if options and 'reset_mask' in options:
+      reset_mask = options['reset_mask']
+      self.episode_steps[reset_mask] = 0
+    else:
+      self.episode_steps = np.zeros(self.env.num_envs, dtype=np.int32)
+    obs, info = self.env.reset(options=options, **kwargs)
     return obs, info
 
 
-def create_environment(config: dict, mode: str = 'synchronous') -> gym.Env:
+def create_environment(config: dict) -> gym.Env:
   """ Creates a Gym environment with specified wrappers.
   Args:
     config: Dictionary containing environment configuration.
@@ -586,17 +614,13 @@ def create_environment(config: dict, mode: str = 'synchronous') -> gym.Env:
   """
   num_envs = config.get('num_envs', 1)
 
-  if mode not in ['synchronous', 'asynchronous']:
-    raise ValueError(
-        f"mode must be 'synchronous' or 'asynchronous', received '{mode}'")
-
   # Mario environment needs JoypadSpace which is not vectorized, so we need to
-  # create a SyncVectorEnv.
+  # create a AsyncVectorEnv.
   if 'SuperMarioBros' not in config['env_name']:
     env = gym.make_vec(
         config['env_name'],
         num_envs=num_envs,
-        vectorization_mode="sync" if mode == 'synchronous' else "async",
+        vectorization_mode="async",
         render_mode="rgb_array")
   else:
     # Super Mario Bros environment is not compatible with vectorized environments.
@@ -607,7 +631,7 @@ def create_environment(config: dict, mode: str = 'synchronous') -> gym.Env:
       mario_env = JoypadSpace(mario_env, SIMPLE_MOVEMENT)
       return mario_env
 
-    env = SyncVectorEnv([lambda: _create_mario_env() for _ in range(num_envs)])
+    env = AsyncVectorEnv([lambda: _create_mario_env() for _ in range(num_envs)])
 
   # Seed the environment if configured
   if 'seed' in config:

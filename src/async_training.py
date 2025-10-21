@@ -36,10 +36,7 @@ def async_worker_thread(config, agent, worker_id=0):
               unit=' experiences',
               unit_scale=True)
 
-  # We only run synchronous environment for the worker executed by the main thread
-  # that is the one with access to GUI and frame rendering logic.
-  env = create_environment(
-      config['env'], mode='asynchronous' if worker_id > 0 else 'synchronous')
+  env = create_environment(config['env'])
   observation, info = env.reset()
   episode_start = np.zeros(env.num_envs, dtype=bool)
 
@@ -66,7 +63,7 @@ def async_worker_thread(config, agent, worker_id=0):
     # Note: Only worker_id 0 is run in the main process thread, and is allowed to
     # render GUI.
     if worker_id == 0:
-      render(info, q_values, action, config)
+      render(info, q_values, action, reward, config)
 
   print("Maximum number of steps reached.")
 

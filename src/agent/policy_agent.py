@@ -1,5 +1,6 @@
 from collections import deque
 import os
+from src import render
 from typing import Union, Tuple, Callable
 from src.agent.agent import Agent
 from src.environment import Observation, merge_observations
@@ -67,12 +68,18 @@ class Policy(nn.Module):
             torch.ones(len(mlp_layers_dim) - 1, dtype=torch.float32) * 0.95)
         self.residual_parameters.append(self.residuals['actor'])
 
-    self.activation = torch.nn.LeakyReLU()
+    self.activation = torch.nn.SiLU()
 
   def forward(self,
               x: Tuple[torch.Tensor, torch.Tensor],
+              render_input_frames: bool = False,
               training: bool = False) -> torch.Tensor:
     image, dense = x
+
+    if render_input_frames and image.numel() > 0:
+      render.maybe_render_dqn(
+          image[0], dense[0] if dense.numel() > 0 else torch.empty(()))
+
     cnn_output = self.convolution(image) if self.convolution else torch.empty(
         0, device=dense.device)
 
@@ -144,7 +151,7 @@ class PolicyAgent(Agent):
 
   def get_action(self, observation: Observation) -> tuple[int, np.ndarray]:
     with torch.no_grad(), ProfileScope("model_inference"):
-      x, _ = self.policy(observation.as_input(self.device))
+      x, _ = self.policy(observation.as_input(self.device), render_input_frames=True)
       probs = torch.nn.functional.softmax(x, dim=-1)
       m = torch.distributions.Categorical(probs=probs)
       actions = m.sample().cpu().numpy()
@@ -195,7 +202,7 @@ class REINFORCEAgent(PolicyAgent):
         self.episode_rewards[i] = []
 
   def replay(self):
-    if len(self.ready_rewards) < self.batch_size:
+    if len(self.ready_rewards) == 0:
       return 0
     episode = self.ready_episode[0]
     actions = []
@@ -236,7 +243,6 @@ class REINFORCEAgent(PolicyAgent):
     loss.backward()
     pre_clip_grad_norm = self.clip_gradients(self.policy.parameters())
     self.optimizer.step()
-    self.policy.clamp_residuals()
 
     self.summary_writer.add_scalar('Replay/Loss', loss)
     self.summary_writer.add_scalar('Replay/LearningRate',
@@ -276,7 +282,7 @@ class A2CAgent(PolicyAgent):
         for i in range(num_envs)
     }
     self.finished_episodes = np.zeros(num_envs, dtype=bool)
-    self.entropy_coeff = config.get('entropy_coeff', 0.001)
+    self.entropy_coeff = config['entropy_coeff']
     self.steps = 0
 
   def remember(self, observation, action, reward, next_observation, done,
@@ -305,15 +311,14 @@ class A2CAgent(PolicyAgent):
         i for i in range(len(self.episode_observations))
         if len(self.episode_observations[i]) == self.n_steps
     ]
-    if not valid_obs:
+    if not np.any(valid_obs):
       return 0
     valid_finished_obs = self.finished_episodes[valid_obs]
 
     # observations is first and last observation of each valid episode
     observations = merge_observations(
         [self.episode_observations[i][0] for i in valid_obs] +
-        [self.episode_observations[i][-1]
-         for i in valid_obs]).as_input(self.device)
+        [self.episode_observations[i][-1] for i in valid_obs]).as_input(self.device)
 
     policy, critic = self.policy(observations, training=True)
     critic = critic.squeeze()
@@ -341,8 +346,8 @@ class A2CAgent(PolicyAgent):
     critic_loss = nn.MSELoss()(rewards, obs_critic)
 
     advantage = rewards - obs_critic.detach()
-    advantage = (advantage - advantage.mean()) / (advantage.std() + 1e-8)
-    #advantage = advantage - advantage.mean()
+    #advantage = (advantage - advantage.mean()) / (advantage.std() + 1e-8)
+    advantage = advantage - advantage.mean()
     log_softmax_action_chosen = torch.gather(
         log_softmax, 1,
         torch.tensor([self.episode_actions[i][0] for i in valid_obs],

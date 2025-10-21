@@ -74,9 +74,12 @@ class Agent:
     if config['optimizer'] == 'adam':
       self.optimizer = optim.Adam(self.parameters_to_optimize(),
                                   lr=self.learning_rate)
+    elif config['optimizer'] == 'adamw':
+      self.optimizer = optim.AdamW(self.parameters_to_optimize(),
+                                   lr=self.learning_rate)
     else:
       raise ValueError(
-          f"Unsupported optimizer: {config['optimizer']}. Supported: 'adam'.")
+          f"Unsupported optimizer: {config['optimizer']}. Supported: 'adam', 'adamw'.")
 
     self.lr_scheduler = None
     if 'lr_scheduler' in config:

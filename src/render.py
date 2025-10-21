@@ -144,7 +144,7 @@ def maybe_render_dqn(x, side_input: torch.Tensor):
   if stacked.ndim == 2:
     stacked = cv2.cvtColor(stacked, cv2.COLOR_GRAY2BGR)
   # Render side_input value below the stacked frames
-  if side_input is not None:
+  if side_input.numel() > 0:
     text = f"side_input: {side_input}"
     # Calculate new image height to add space for text
     text_height = 40
@@ -153,7 +153,7 @@ def maybe_render_dqn(x, side_input: torch.Tensor):
     new_img[:stacked.shape[0], :, :] = stacked
     # Put text in the new area below the frames
     cv2.putText(new_img, text, (10, stacked.shape[0] + 30),
-                cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
     stacked = new_img
   _display_frame("Stacked Frames", stacked)
 
@@ -206,17 +206,22 @@ def frame_q_values_bar(q_values_norm,
   return bar_img
 
 
-def frame_with_q_values(next_state, q_values, action, labels, upscale_factor):
+def frame_with_q_values(next_state, q_values, action, labels, reward, upscale_factor):
   """
   Render the frame with Q-values overlay.
   """
   # Convert next_state from RGB to BGR for correct OpenCV display
   next_state_bgr = cv2.cvtColor(next_state, cv2.COLOR_RGB2BGR)
-  # Upscale the frame to 2x before rendering Q-values
+  # Upscale before rendering Q-values
   next_state_up = cv2.resize(next_state_bgr,
                              (int(next_state_bgr.shape[1] * upscale_factor),
                               int(next_state_bgr.shape[0] * upscale_factor)),
                              interpolation=cv2.INTER_NEAREST)
+
+  # Write reward text on the top right part of the frame
+  reward_text = f"Reward: {reward:.2f}"
+  cv2.putText(next_state_up, reward_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+              (0, 255, 255), 2)  # Yellow color
 
   # Normalize and render Q-values
   q_values_norm = (q_values - np.min(q_values)) / (np.ptp(q_values) + 1e-8)
@@ -229,7 +234,7 @@ def frame_with_q_values(next_state, q_values, action, labels, upscale_factor):
   return frame_with_q
 
 
-def render(info, q_values, action, config, recording=None):
+def render(info, q_values, action, rewards, config, recording=None):
   labels = config['env']['env_action_labels']
   upscale_factor = config.get('render_upscale_factor', 1)
   layout = config.get('render_layout', None)
@@ -241,9 +246,9 @@ def render(info, q_values, action, config, recording=None):
   # Take the first environment's data, for now. Might be good to render all.
 
   frames = []
-  for frame, q_values, action in zip(frame, q_values, action):
+  for frame, q_values, action, reward in zip(frame, q_values, action, rewards):
     # Render the frame with Q-values and action labels
-    frame = frame_with_q_values(frame, q_values, action, labels,
+    frame = frame_with_q_values(frame, q_values, action, labels, reward,
                                 upscale_factor)
     frames.append(frame)
 
