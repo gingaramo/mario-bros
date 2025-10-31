@@ -1,3 +1,4 @@
+from collections import deque
 from typing import Tuple, List
 import numpy as np
 import threading
@@ -68,6 +69,23 @@ class ValueAgent(Agent):
     self.model_lock = threading.Lock()
     self.replay_buffer_lock = threading.Lock()
 
+    self.n_steps = config.get('n_steps', 1)
+    print(f" + Using n_steps={self.n_steps} for n-step returns.")
+
+    self.episode_observations = {
+        i: deque(maxlen=self.n_steps)
+        for i in range(self.num_envs)
+    }
+    self.episode_actions = {
+        i: deque(maxlen=self.n_steps)
+        for i in range(self.num_envs)
+    }
+    self.episode_rewards = {
+        i: deque(maxlen=self.n_steps)
+        for i in range(self.num_envs)
+    }
+    self.finished_episodes = np.zeros(self.num_envs, dtype=bool)
+
   def load_or_init_state(self, env, config, checkpoint_dict):
     assert 'dqn' in config['network'] or 'dueling_dqn' in config[
         'network'], "Invalid network configuration"
@@ -123,11 +141,32 @@ class ValueAgent(Agent):
                done: List[bool], episode_start: List[bool]):
     """Stores experience. State gathered from last state sent to act().
     """
+    # First we clean out the episodes that are done.
+    for i, finished in enumerate(self.finished_episodes):
+      if finished:
+        self.episode_observations[i].clear()
+        self.episode_actions[i].clear()
+        self.episode_rewards[i].clear()
+    self.finished_episodes = np.zeros(self.num_envs, dtype=bool)
+
+    # Then we collect experiences for the new episode data
+    for i in range(len(observation)):
+      self.episode_observations[i].append(observation[i])
+      self.episode_actions[i].append(action[i])
+      self.episode_rewards[i].append(reward[i])
+      if done[i]:
+        self.finished_episodes[i] = True
+
     with ProfileLockScope("replay_buffer_append", self.replay_buffer_lock):
-      for i in range(len(reward)):
+      for i in range(self.num_envs):
         if not episode_start[i]:
-          self.replay_buffer.append(observation[i], action[i], reward[i],
-                                    next_observation[i], done[i])
+          reward_sum = 0.0
+          for n in range(len(self.episode_rewards[i])):
+            reward_sum += self.episode_rewards[i][n] * (self.gamma**n)
+
+          self.replay_buffer.append(self.episode_observations[i][0],
+                                    self.episode_actions[i][0], reward_sum,
+                                    self.episode_observations[i][-1], done[i])
 
   def compute_target(self, all_reward: torch.Tensor,
                      all_next_observation: Tuple[torch.Tensor, torch.Tensor],
@@ -294,7 +333,8 @@ class ValueAgent(Agent):
       return action.astype(int), act_values
     elif self.action_selection == 'max':
       with torch.no_grad(), ProfileScope("model_inference"):
-        q_values = self.model(observation.as_input(self.device), render_input_frames=True)
+        q_values = self.model(observation.as_input(self.device),
+                              render_input_frames=True)
         q_values_np = q_values.detach().cpu().numpy()
         best_actions = np.argmax(q_values_np, axis=1).astype(int)
 
