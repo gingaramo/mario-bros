@@ -1,4 +1,5 @@
 from time import time
+from collections import deque
 from typing import Tuple, List
 from collections import deque
 import numpy as np
@@ -350,7 +351,8 @@ class ValueAgent(Agent):
       return action.astype(int), act_values
     elif self.action_selection == 'max':
       with torch.no_grad(), ProfileScope("model_inference"):
-        q_values = self.model(observation.as_input(self.device), render_input_frames=True)
+        q_values = self.model(observation.as_input(self.device),
+                              render_input_frames=True)
         q_values_np = q_values.detach().cpu().numpy()
         best_actions = np.argmax(q_values_np, axis=1).astype(int)
 
