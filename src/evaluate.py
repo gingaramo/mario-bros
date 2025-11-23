@@ -49,14 +49,13 @@ def evaluate_agent(config,
     (_, action, reward, observation, done, info) = experience
 
     # Store experience if we're not at the begining of an episode
-    terminated_idx = 0
-    for i, don in enumerate(done):
-      if don:
-        evaluate_pbar.update(1)
-        accumulated_reward.append(info['terminated_accumulated_reward'][terminated_idx])
-        episode_steps.append(info['terminated_episode_steps'][terminated_idx])
-        terminated_idx += 1
-        num_episodes -= 1
+    if np.any(done):
+      for i in range(len(done)):
+        assert info['_episode'][i] == done[i], "Episode info mismatch"
+        if done[i]:
+          accumulated_reward.append(info['episode']['r'][i])
+          episode_steps.append(info['episode']['l'][i])
+          num_episodes -= 1
 
     # Render frames if rendering is enabled or recording is active
     render(info, q_values, action, reward, config)

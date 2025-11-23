@@ -11,7 +11,7 @@ from src.agent.agent import Agent
 
 from .environment import create_environment
 from .render import render
-from .training_utils import create_summary_writer
+from .training_utils import create_summary_writer, is_tqdm_disabled
 from .agent_utils import execute_agent_step, create_agent
 from .profiler import ProfileScope
 
@@ -29,12 +29,14 @@ def async_worker_thread(config, agent, worker_id=0):
         This thread handles agent inference, environment interaction, and rendering.
         It runs independently from the training thread for better performance.
     """
+  disable_tqdm = is_tqdm_disabled()
   pbar = tqdm(total=config['env']['num_steps'] /
               config['env'].get('num_env_workers', 1),
               desc="Asynchronous Worker",
               position=worker_id + 1,
               unit=' experiences',
-              unit_scale=True)
+              unit_scale=True,
+              disable=disable_tqdm)
 
   env = create_environment(config['env'])
   observation, info = env.reset()
@@ -86,11 +88,13 @@ def async_trainer_thread(config, agent: Agent, stop_event):
         environment interaction for better GPU performance.
     """
   # Run the main training loop
+  disable_tqdm = is_tqdm_disabled()
   pbar = tqdm(total=None,
               desc="Trainer thread",
               position=0,
               unit=' experiences',
-              unit_scale=True)
+              unit_scale=True,
+              disable=disable_tqdm)
 
   while stop_event.is_set() is False:
     # Train the agent if replay is successful

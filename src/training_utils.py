@@ -146,13 +146,15 @@ def record_episode_statistics(summary_writer, done, truncated, info):
         Statistics are only recorded for environments where episodes
         have finished (either done or truncated).
     """
-  terminated_idx = 0
+  if not (np.any(done) or np.any(truncated)):
+    return
+
   for i in range(len(done)):
+    assert info['_episode'][i] == (done[i] or truncated[i]), "Episode info mismatch"
     if done[i] or truncated[i]:
       summary_writer.add_scalar("Episode/Reward",
-                                info['terminated_accumulated_reward'][terminated_idx])
-      summary_writer.add_scalar("Episode/Steps", info['terminated_episode_steps'][terminated_idx])
-      terminated_idx += 1
+                                info['episode']['r'][i])
+      summary_writer.add_scalar("Episode/Steps", info['episode']['l'][i])
 
 def create_summary_writer(config):
   """
@@ -204,3 +206,9 @@ def setup_training_environment(config, config_file_path, restart_training):
   set_headless_mode(config['env'].get('headless', False))
 
   initialize_checkpoint_directory(config, config_file_path)
+
+
+def is_tqdm_disabled():
+  """Return True when tqdm progress bars should be disabled."""
+  value = os.environ.get('TQDM_DISABLE', '').strip().lower()
+  return value in {'1', 'true', 'yes', 'on'}

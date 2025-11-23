@@ -9,7 +9,7 @@ from src.profiler import ProfileScope
 
 from .environment import create_environment
 from .render import render
-from .training_utils import create_summary_writer
+from .training_utils import create_summary_writer, is_tqdm_disabled
 from .agent_utils import execute_agent_step, create_agent
 from .evaluate import evaluate_agent
 
@@ -34,21 +34,24 @@ def run_sync_training(config):
       'eval_every_n_trained_experiences']
   eval_trained_experiences_left = eval_every_n_trained_experiences
 
+  disable_tqdm = is_tqdm_disabled()
   train_pbar = tqdm(total=config['env']['num_steps'] //
                     config['env']['num_envs'],
                     desc="Synchronous Trainer",
                     position=0,
                     unit=' experiences',
-                    unit_scale=True)
+                    unit_scale=True,
+                    disable=disable_tqdm)
   env_pbar = tqdm(total=config['env']['num_steps'],
                   desc="Synchronous Worker",
                   position=1,
                   unit=' experiences',
                   unit_scale=True,
-                  initial=agent.global_step)
+                  initial=agent.global_step,
+                  disable=disable_tqdm)
 
   observation, _ = env.reset()
-  episode_start = np.zeros(env.num_envs, dtype=bool)
+  episode_start = np.ones(env.num_envs, dtype=bool)
   while agent.global_step < config['env']['num_steps']:
     with ProfileScope("agent_act"):
       action, q_values = agent.act(observation)

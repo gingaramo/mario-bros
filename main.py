@@ -69,15 +69,14 @@ def main(args):
       run_async_training(config)
     else:
       raise ValueError(f"Unknown execution mode: {execution_mode}")
+  # NOTE: AMP scope moved down into the agent's replay() forward/loss only.
   if config.get('use_cuda_amp', False):
     assert config['device'] == 'cuda', "CUDA AMP requires CUDA device."
-    with torch.cuda.amp.autocast():
-      print(" [o] Using CUDA AMP for mixed precision training.")
-      _run()
+    print(" [o] Using CUDA AMP for mixed precision training (scoped in agent replay).")
   else:
     if config['device'] == 'cuda':
       print(" [x] Using CUDA device for training. But not using CUDA AMP!")
-    _run()
+  _run()
 
 
 def create_argument_parser():

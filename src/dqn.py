@@ -3,9 +3,12 @@ import numpy as np
 import random
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import src.render as render
 from src.environment import Observation
-from src.network.observation_layer import CNNObservationLayer
+from src.network.observation_layer import CNNObservationLayer, CNNTokenObservationLayer
+from src.network.swiglu import SwiGLU
+from src.noisy_network import NoisyLinear
 
 
 def _create_mlp(hidden_layers_dim: list):
@@ -168,3 +171,127 @@ class DuelingDQN(BaseDQN):
       value_x = self.activation(layer(value_x))
     value_x = self.value_hidden_layers[-1](value_x)
     return value_x + advantage_x - advantage_x.mean(dim=1, keepdim=True)
+
+
+class TransformerDuelingDQN(nn.Module):
+  """Transformer dueling DQN"""
+
+  def __init__(self, action_size: int, mock_observation: Observation,
+               config: dict):
+    assert mock_observation.frame is not None, "Mock Observation's frame cannot be None"
+    super(TransformerDuelingDQN, self).__init__()
+    self.image_to_token_layer = CNNTokenObservationLayer(mock_observation, config['convolution'])
+    self.action_size = action_size
+    self.activation = torch.nn.LeakyReLU()
+
+    # We need K, Q, V projections per H, and FFN for each layer
+    # That means [L, 3, H, D, D/H] + [D, D]
+    self.num_heads = config['num_heads']
+    self.num_layers = config['num_layers']
+    self.token_dimension = config['token_dimension']
+    self.inverse_sqrt_dk = (self.token_dimension / self.num_heads)**-0.5
+    assert self.token_dimension % self.num_heads == 0
+    self.kqv_proj = nn.parameter.Parameter(torch.rand((self.num_layers, 3, self.num_heads, self.token_dimension, self.token_dimension//self.num_heads)))
+    self.kqv_proj_bias = nn.parameter.Parameter(
+      torch.zeros((
+        self.num_layers, 3, self.num_heads,
+        1, # batch -- gets broadcasted
+        1, # seq_len -- gets broadcasted
+        self.token_dimension//self.num_heads)))
+    # Xavier initialization
+    for layer in range(self.num_layers):
+      for head in range(self.num_heads):
+        for k_q_or_v in range(3):
+          nn.init.xavier_uniform_(self.kqv_proj[layer, k_q_or_v, head])
+    nn.init.constant_(self.kqv_proj_bias, 0)
+
+    widening_factor = 2
+    self.ffn_proj = nn.ModuleList([
+      nn.Sequential(
+          nn.Linear(self.token_dimension, self.token_dimension * widening_factor),
+          nn.GELU(),
+          nn.Linear(self.token_dimension * widening_factor, self.token_dimension)
+      ) for _ in range(self.num_layers)
+    ])
+    self.layer_norm_post_mha = nn.ModuleList([nn.LayerNorm(self.token_dimension) for i in range(self.num_layers)])
+    self.layer_norm_post_ffn = nn.ModuleList([nn.LayerNorm(self.token_dimension) for i in range(self.num_layers)])
+    self.output_proj_advantage = nn.Sequential(
+      nn.Linear(self.token_dimension, self.token_dimension * widening_factor),
+      nn.GELU(),
+      nn.Linear(self.token_dimension * widening_factor, action_size)
+    )
+    self.output_proj_value = nn.Sequential(
+      nn.Linear(self.token_dimension, self.token_dimension * widening_factor),
+      nn.GELU(),
+      nn.Linear(self.token_dimension * widening_factor, 1),
+    )
+    self.dense_proj = nn.Linear(mock_observation.dense.shape[-1], self.token_dimension)
+
+    # Assuming input shape is [B, L, H, W], where L is number of frames history
+    self.seq_len = \
+      (mock_observation.frame.shape[-2] // self.image_to_token_layer.patch_height) * \
+      (mock_observation.frame.shape[-1] // self.image_to_token_layer.patch_width) + 2 # +1 for the value embedding +1 for dense embedding
+
+    self.positional_embeddings = nn.Parameter(torch.zeros(self.seq_len, self.token_dimension))
+    nn.init.xavier_uniform_(self.positional_embeddings)
+
+    # Initialize weights properly
+    self._initialize_weights()
+
+  def _initialize_weights(self):
+    """Initialize network weights to prevent initial NaN issues"""
+    for module in self.modules():
+      if isinstance(module, nn.Linear):
+        # Xavier/Glorot initialization for linear layers
+        nn.init.xavier_uniform_(module.weight)
+        if module.bias is not None:
+          nn.init.constant_(module.bias, 0)
+
+  def forward(self,
+              x: Tuple[torch.Tensor, torch.Tensor],
+              training: bool = False,
+              render_input_frames: bool = False) -> torch.Tensor:
+    "The actual forward call for the DQN model."
+    x, side_input = x
+
+    # Render the side input if there's a frame.
+    if render_input_frames and x.numel() > 0:
+      render.maybe_render_dqn(
+          x[0], side_input[0] if side_input.numel() > 0 else torch.empty(0))
+
+    x = self.image_to_token_layer(x)
+    x = torch.concat([x, self.dense_proj(side_input).unsqueeze(1)], dim=1)
+    # Add positional embeddings
+    x = x + self.positional_embeddings.unsqueeze(0)
+    batch_size = x.shape[0]
+
+    # self-attention layers
+    for layer in range(self.num_layers):
+      # Create K, Q, V projections under dimension 'c' for each head. This performs projections for every 'd' row with 'do'. 
+      projections = torch.einsum('bld,chdo->chblo', x, self.kqv_proj[layer])
+      # Add bias
+      projections = projections + self.kqv_proj_bias[layer].expand(-1, -1, batch_size, self.seq_len, -1)
+
+      # Extract K, Q, V
+      k, q, v = projections[0], projections[1], projections[2]
+
+      # Perform scaled dot-product attention between Q and K
+      attention = torch.einsum('hblo,hbLo->hblL', q, k) * self.inverse_sqrt_dk
+      # Upcast attention to float32 for numerical stability during softmax
+      attention = F.softmax(attention.to(torch.float32), dim=-1)
+      # Apply attention weights to V, swapping order of dimensions to make head concatennation easier
+      attention = torch.einsum('hblL,hbLo->blho', attention, v)
+      _b,_l,_h,_o = attention.shape
+      attention = attention.reshape((_b,_l,_h * _o))
+      x = self.layer_norm_post_mha[layer](attention + x)
+      x_ffn_proj = self.ffn_proj[layer](x)
+      x = self.layer_norm_post_ffn[layer](x_ffn_proj + x)
+
+    assert self.seq_len == x.shape[-2], f"Expected sequence length {self.seq_len}, got {x.shape[-2]}"
+    x = x[:, self.seq_len - 1, :]
+
+    value_x = self.output_proj_value(x)
+    advantage_x = self.output_proj_advantage(x)
+    return_x = value_x + advantage_x - advantage_x.mean(dim=-1, keepdim=True)
+
+    return return_x

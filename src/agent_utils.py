@@ -29,8 +29,6 @@ def execute_agent_step(action, env_step, observation, summary_writer):
     """
   next_observation, reward, done, truncated, info = env_step(action)
 
-  # TODO: next_observation will not be the end frame, but the first frame of the
-  # next episode when reset happens. We need to pull the frame from 'info'.
   # TODO: Implement curiosity-driven exploration
   #if agent.curiosity_module:
   #  reward += agent.curiosity_reward(observation, next_observation, action,
@@ -50,6 +48,9 @@ def create_agent(config, env, summary_writer):
   """
   device = torch.device(config['device'])
   print(f"Using device: {device}")
+  # Propagate top-level flags into agent config so inner logic can access them.
+  config['agent']['use_cuda_amp'] = config.get('use_cuda_amp', False)
+  config['agent']['device'] = config['device']
   if config['agent']['type'] == 'policy':
     from .agent.policy_agent import REINFORCEAgent
     from .agent.policy_agent import A2CAgent

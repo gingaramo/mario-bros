@@ -1,0 +1,77 @@
+device: cuda
+use_cuda_amp: true
+
+seed: 42
+render_upscale_factor: 1
+render_layout: [2, 2]
+
+env:
+  env_name: "LunarLander-v3"
+  env_kwargs:
+    continuous: False
+    gravity: -10.0
+    enable_wind: False
+    wind_power: 15.0
+    turbulence_power: 1.5
+  env_wrappers:
+    - CaptureRenderFrameEnv
+    - PreprocessFrameEnv
+    - HistoryEnv
+  ObservationWrapper:
+    input: dense
+  CaptureRenderFrameEnv:
+    mode: replace  # Options: 'capture', 'replace'
+  PreprocessFrameEnv:
+    resize_shape: [84, 84]
+    grayscale: true
+    normalize: true
+  HistoryEnv:
+    history_length: 4
+
+  env_action_labels: [NOOP, LEFT, MAIN, RIGHT]
+  num_steps: 100_000_000
+  num_envs: 256
+  eval_every_n_trained_experiences: 500_000
+  eval_episodes: 50
+
+agent:
+  name: lander_transformer
+  type: value
+  gamma: 0.99
+  #apply_noisy_network: true
+
+  epsilon: 0.9
+  epsilon_min: 0.15
+  epsilon_linear_decay: 0.00000125
+
+  batch_size: 512
+  min_memory_size: 512
+  loss: huber
+  clip_gradients: 10.0
+
+  # Optimizer settings
+  optimizer: adamw
+  learning_rate: 0.001
+  lr_scheduler:
+    type: lr_scheduler.LinearLR
+    args:
+      start_factor: 1
+      end_factor: 0.2
+      total_iters: 100000
+
+  action_selection: max
+  double_dqn: true
+
+  replay_buffer:
+    type: uniform
+    size: 200_000
+
+  replay_every_n_steps: 1
+  replays_until_target_update: 50
+  checkpoint_every_n_replays: 10_000
+
+  network:
+    transformer_ddqn:
+      num_heads: 4
+      num_layers: 4
+      token_dimension: 256

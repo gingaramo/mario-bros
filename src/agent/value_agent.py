@@ -1,4 +1,6 @@
+from time import time
 from typing import Tuple, List
+from collections import deque
 import numpy as np
 import threading
 import torch
@@ -6,8 +8,9 @@ import torch.nn as nn
 import torch.optim as optim
 import os
 from src.profiler import ProfileScope, ProfileLockScope
-from src.dqn import DQN, DuelingDQN
+from src.dqn import DQN, DuelingDQN, TransformerDuelingDQN
 from src.environment import Observation
+from src.render import render_training_samples
 from src.noisy_network import replace_linear_with_noisy, NoisyLinear
 from src.replay_buffer import UniformExperienceReplayBuffer, PrioritizedExperienceReplayBuffer, OrderedExperienceReplayBuffer
 from src.agent.agent import Agent
@@ -68,9 +71,25 @@ class ValueAgent(Agent):
     self.model_lock = threading.Lock()
     self.replay_buffer_lock = threading.Lock()
 
+    # N-step returns
+    self.n_steps = config.get('n_steps', 1)
+    print(f" o Using n-step returns of {self.n_steps}")
+    self.episode_observations = {
+        i: deque(maxlen=self.n_steps + 1)
+        for i in range(self.num_envs)
+    }
+    self.episode_actions = {
+        i: deque(maxlen=self.n_steps)
+        for i in range(self.num_envs)
+    }
+    self.episode_rewards = {
+        i: deque(maxlen=self.n_steps)
+        for i in range(self.num_envs)
+    }
+
   def load_or_init_state(self, env, config, checkpoint_dict):
     assert 'dqn' in config['network'] or 'dueling_dqn' in config[
-        'network'], "Invalid network configuration"
+        'network'] or 'transformer_dueling_dqn' in config['network'], "Invalid network configuration"
 
     mock_observation, _ = env.reset()
     if 'dqn' in config['network']:
@@ -83,11 +102,17 @@ class ValueAgent(Agent):
                               config['network']['dueling_dqn'])
       self.target_model = DuelingDQN(self.action_size, mock_observation,
                                      config['network']['dueling_dqn'])
+    elif 'transformer_dueling_dqn' in config['network']:
+      self.model = TransformerDuelingDQN(self.action_size, mock_observation,
+                              config['network']['transformer_dueling_dqn'])
+      self.target_model = TransformerDuelingDQN(self.action_size, mock_observation,
+                                     config['network']['transformer_dueling_dqn'])
 
     # Noisy network initialization.
     if config.get('apply_noisy_network', False):
       self.model = replace_linear_with_noisy(self.model)
       self.target_model = replace_linear_with_noisy(self.target_model)
+    print(f" o Model initialized: {self.model}")
 
     # Set the target model to eval mode and keep it there
     self.target_model.eval()
@@ -121,13 +146,33 @@ class ValueAgent(Agent):
   def remember(self, observation: List[Tuple[List, List]], action: List[int],
                reward: List[float], next_observation: List[Tuple[List, List]],
                done: List[bool], episode_start: List[bool]):
-    """Stores experience. State gathered from last state sent to act().
-    """
+    # First we collect the observation that is the consequence for the action
+    # and its reward.
+    for i in range(len(next_observation)):
+      if episode_start[i]:
+        self.episode_observations[i].clear()
+        self.episode_actions[i].clear()
+        self.episode_rewards[i].clear()
+        self.episode_observations[i].append(observation[i])
+      self.episode_observations[i].append(next_observation[i])
+      self.episode_actions[i].append(action[i])
+      self.episode_rewards[i].append(reward[i])
+
+    # Then we append to memory buffer if this is not an episode boundary
+    # observation belongs to one episode and next_observation to the next episode,
+    # like it is the case of next-step mode (https://farama.org/Vector-Autoreset-Mode)
     with ProfileLockScope("replay_buffer_append", self.replay_buffer_lock):
-      for i in range(len(reward)):
-        if not episode_start[i]:
-          self.replay_buffer.append(observation[i], action[i], reward[i],
-                                    next_observation[i], done[i])
+      for i in range(self.num_envs):
+        episode_ended_early = done[i] and not episode_start[i]
+        episode_has_n_steps = len(self.episode_rewards[i]) == self.n_steps
+        if not episode_start[i] and (episode_ended_early or episode_has_n_steps):
+          reward_sum = 0.0
+          for n in range(len(self.episode_rewards[i])):
+            reward_sum += self.episode_rewards[i][n] * (self.gamma**n)
+          self.replay_buffer.append(self.episode_observations[i][0],
+                                    self.episode_actions[i][0], reward_sum,
+                                    self.episode_observations[i][-1], done[i])
+
 
   def compute_target(self, all_reward: torch.Tensor,
                      all_next_observation: Tuple[torch.Tensor, torch.Tensor],
@@ -147,7 +192,7 @@ class ValueAgent(Agent):
         # Use the target model to get the Q-value for the next state
         q_next = self.target_model(all_next_observation,
                                    training=False).max(dim=1).values
-    return all_reward + self.gamma * q_next * (1.0 - all_done.float())
+    return all_reward + (self.gamma ** self.n_steps) * q_next * (1.0 - all_done.float())
 
   def compute_prediction(self, all_observation: Tuple[torch.Tensor,
                                                       torch.Tensor],
@@ -191,6 +236,17 @@ class ValueAgent(Agent):
       # replay buffer lock.
       target = self.compute_target(all_reward, all_next_observation, all_done)
       prediction = self.compute_prediction(all_observation, all_action)
+
+    # Render some training samples.
+    # Call render only every n seconds if set > 0.
+    if self.config.get('render_training_samples_every_n_secs', -1) > 0:
+      if not hasattr(self, '_last_training_sample_render_time'):
+        self._last_training_sample_render_time = 0
+
+      if self.config.get(
+          'render_training_samples_every_n_secs', -1) + self._last_training_sample_render_time < time():
+        self._last_training_sample_render_time = time()
+        render_training_samples(all_observation, all_action, all_reward, all_next_observation, all_done)
 
     self.optimizer.zero_grad()
     # Compute the loss

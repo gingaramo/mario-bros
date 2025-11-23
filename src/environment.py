@@ -1,7 +1,8 @@
 import gymnasium as gym
+from gymnasium import spaces
 from gymnasium.vector.vector_env import VectorEnv
 from gymnasium.vector import AsyncVectorEnv
-from typing import Tuple, Optional, List
+from typing import Any, Callable, Dict, Tuple, Optional, List
 from collections import deque
 import cv2
 import torch
@@ -67,7 +68,7 @@ class Observation(object):
       Tuple containing the frame and dense vector, using an empty vector in lieu of any missing component.
     """
     inputs = [
-        torch.empty(0) if self.frame is None else self.frame,
+        torch.empty(0) if self.frame is None else self.frame / 255.0,
         torch.empty(0) if self.dense is None else self.dense
     ]
     converted_inputs = [
@@ -125,7 +126,7 @@ def merge_observations(observations: List[Observation]) -> Observation:
   return Observation(frame=merged_frame, dense=merged_dense)
 
 
-class ObservationWrapper(gym.vector.VectorWrapper):
+class ObservationWrapper(gym.Wrapper):
   """
   A wrapper that returns an Observation object from the environment's step and reset methods.
 
@@ -141,7 +142,7 @@ class ObservationWrapper(gym.vector.VectorWrapper):
       - "dense": Treats environment observations as a dense vector
   """
 
-  def __init__(self, env: VectorEnv, config: dict) -> None:
+  def __init__(self, env, config: dict) -> None:
     super().__init__(env)
     self.input_type = config.get('input', 'frame')
     if self.input_type not in ['frame', 'dense']:
@@ -175,26 +176,55 @@ class ObservationWrapper(gym.vector.VectorWrapper):
 
     return self.to_observation(obs), info
 
+class ObservationToDictWrapper(gym.ObservationWrapper):
+  """A wrapper that converts a custom 'Observation' object into a Dict space
+  compatible with Gymnasium's vector environments and shared memory for AsyncVectorEnv.
+  """
+  def __init__(self, env: gym.Env, mock_obs: Observation) -> None:
+    super().__init__(env)
+    
+    # This structure is easily batched by AsyncVectorEnv.
+    self.observation_space = spaces.Dict({
+        "frame": spaces.Box(
+            low=0, high=255, shape=mock_obs.frame.shape, dtype=np.uint8
+        ),
+        "dense": spaces.Box(
+            low=-np.inf, high=np.inf, shape=(len(mock_obs.dense) if mock_obs.dense is not None else 0,), dtype=np.float32
+        ),
+    })
 
-class PreprocessFrameEnv(gym.vector.VectorWrapper):
+  def observation(self, obs: Observation) -> Dict[str, np.ndarray]:
+    return {
+        "frame": obs.frame,
+        "dense": obs.dense,
+    }
+
+  def reset(self, **kwargs) -> Tuple[Dict[str, np.ndarray], Dict[str, Any]]:
+    obs, info = self.env.reset(**kwargs)
+    return self.observation(obs), info
+
+
+class DictToObservationWrapper(gym.vector.VectorObservationWrapper):
+
+  def observations(self, obs: Dict[str, np.ndarray]) -> Observation:
+    return Observation(frame=obs["frame"], dense=obs["dense"])
+
+class PreprocessFrameEnv(gym.Wrapper):
   """
   Postprocesses Observation 'frame' with common transformations.
   
   config options:
     - resize_shape: [int, int] or None ; if present, frame is resized
     - grayscale: bool
-    - normalize: bool
   """
 
   resize_shape: Optional[Tuple[int, int]]
   grayscale: bool
-  normalize: bool
 
-  def __init__(self, env: VectorEnv, config: dict) -> None:
+  def __init__(self, env, config: dict) -> None:
     super().__init__(env)
     self.resize_shape = config.get('resize_shape', None)
     self.grayscale = bool(config.get('grayscale', False))
-    self.normalize = bool(config.get('normalize', False))
 
   def preprocess(self, frame: np.ndarray) -> np.ndarray:
     if not isinstance(frame, np.ndarray):
@@ -214,28 +244,22 @@ class PreprocessFrameEnv(gym.vector.VectorWrapper):
       # Not hard to add, but won't do it now.
       raise NotImplementedError("Only grayscale images are supported.")
 
-    if self.normalize:
-      frame = frame.astype(np.float32) / 255.0
     return frame
 
   def step(self, action: int) -> Tuple[Observation, float, bool, bool, dict]:
     obs, reward, terminated, truncated, info = self.env.step(action)
     assert obs.frame is not None
-    processed_frame = np.stack(
-        [self.preprocess(obs.frame[i]) for i in range(self.env.num_envs)])
-    return Observation(frame=processed_frame,
+    return Observation(frame=self.preprocess(obs.frame),
                        dense=obs.dense), reward, terminated, truncated, info
 
   def reset(self, **kwargs) -> Tuple[Observation, dict]:
     obs, info = self.env.reset(**kwargs)
 
     assert obs.frame is not None
-    processed_frame = np.stack(
-        [self.preprocess(obs.frame[i]) for i in range(self.env.num_envs)])
-    return Observation(frame=processed_frame, dense=obs.dense), info
+    return Observation(frame=self.preprocess(obs.frame), dense=obs.dense), info
 
 
-class RepeatActionEnv(gym.vector.VectorWrapper):
+class RepeatActionEnv(gym.Wrapper):
   """
   Repeats the action given to step() as many times as configured.
   Truncates episodes after terminated, so observation is always first env observation. 
@@ -249,66 +273,25 @@ class RepeatActionEnv(gym.vector.VectorWrapper):
 
   num_repeat_action: int
 
-  def __init__(self, env: VectorEnv, config: dict) -> None:
+  def __init__(self, env, config: dict) -> None:
     super().__init__(env)
     self.num_repeat_action = config.get('num_repeat_action', 1)
     if self.num_repeat_action < 1:
       raise ValueError("num_repeat_action must be >= 1")
-    self.observation_wrapper = self.env
-    while not isinstance(self.observation_wrapper, ObservationWrapper):
-      self.observation_wrapper = self.observation_wrapper.env
 
   def step(self, action: int) -> Tuple[Observation, float, bool, bool, dict]:
-    num_envs = self.env.num_envs
-    total_reward = np.zeros((num_envs, ))
-    terminated = np.zeros((num_envs, ), dtype=bool)
-    truncated = np.zeros((num_envs, ), dtype=bool)
-    ret_obs = [None] * num_envs
+    obs = None
+    total_reward = 0
+    terminated = False
+    truncated = False
     info = None
-    done_info = {}
-    terminated_or_truncated = set()
     for _ in range(self.num_repeat_action):
-      _obs, _reward, _terminated, _truncated, info = self.env.step(action)
-      # Each time that an environment is terminated or truncated, we receive their
-      # accumulated reward and episode steps in the info dictionary.
-      for key in info.keys():
-        if 'terminated' in key:
-          if key not in done_info:
-            done_info[key] = info[key]
-          else:
-            done_info[key] = np.concatenate((done_info[key], info[key]), axis=0)
+      obs, _reward, terminated, truncated, info = self.env.step(action)
+      total_reward += _reward
+      if terminated or truncated:
+        break
 
-      for i, (o, r, t, tr) in enumerate(
-          zip(_obs.as_list(), _reward, _terminated, _truncated)):
-        assert i not in terminated_or_truncated or (i in terminated_or_truncated and not (t or tr)), \
-            "Environment should not be terminated or truncated more than once per step."
-        if i in terminated_or_truncated:
-          continue
-        total_reward[i] += r
-        terminated[i] |= t
-        truncated[i] |= tr
-        if t or tr:
-          terminated_or_truncated.add(i)
-        else:
-          ret_obs[i] = o
-
-    # Now reset environments that got terminated or truncated, so that the
-    # first observation is the one after the reset.
-    if np.any(terminated_or_truncated):
-      reset_mask = np.zeros((num_envs, ), dtype=bool)
-      reset_mask[list(terminated_or_truncated)] = True
-      obs, _ = self.env.reset(options={'reset_mask': reset_mask})
-      obs = obs.as_list()
-      for i in terminated_or_truncated:
-        # Convert the observation to the expected Observation type
-        ret_obs[i] = obs[i]
-
-    # Merge terminated info 
-    for key in done_info:
-      info[key] = done_info[key]
-
-    return merge_observations(
-        ret_obs), total_reward, terminated, truncated, info
+    return obs, total_reward, terminated, truncated, info
 
   def reset(self, **kwargs) -> Tuple[Observation, dict]:
     obs, info = self.env.reset(**kwargs)
@@ -316,60 +299,46 @@ class RepeatActionEnv(gym.vector.VectorWrapper):
     return obs, info
 
 
-class ReturnActionEnv(gym.vector.VectorWrapper):
+class ReturnActionEnv(gym.Wrapper):
   """
   Appends the current action to the observation's dense vector.
 
   This wrapper takes the action that was just performed and appends it to the dense
   vector of the resulting observation. This allows the agent to have access to the
   action that led to the current state.
-
-  config options:
-    - mode: str ; "append" (default and only supported mode)
-      - "append": Appends the current action as a dense parameter to the observation
   """
 
-  def __init__(self, env: VectorEnv, config: dict = None) -> None:
+  def __init__(self, env, config: dict) -> None:
     super().__init__(env)
-    config = config or {}
-    self.mode = config.get('mode', 'append')
-    if self.mode not in ['append']:
-      raise ValueError(f"Invalid mode '{self.mode}'. Must be 'append'")
 
   def step(self,
            action: List[int]) -> Tuple[Observation, float, bool, bool, dict]:
     obs, reward, terminated, truncated, info = self.env.step(action)
 
-    if self.mode == 'append':
-      num_envs = self.env.num_envs
-      action = np.array(action).reshape(num_envs, -1)
-      # Create new observation with dense vector containing current action
-      if obs.dense is not None:
-        # Append current action to existing dense vector
-        new_dense = np.concatenate((obs.dense, action), axis=1)
-      else:
-        # Create dense vector with just current action
-        new_dense = action
-      return Observation(frame=obs.frame,
-                         dense=new_dense), reward, terminated, truncated, info
+    if obs.dense is not None:
+      # Append current action to existing dense vector
+      new_dense = np.concatenate((obs.dense, action), axis=0)
+    else:
+      # Create dense vector with just current action
+      new_dense = action
+
+    return Observation(frame=obs.frame,
+                       dense=new_dense), reward, terminated, truncated, info
 
   def reset(self, **kwargs) -> Tuple[Observation, dict]:
     obs, info = self.env.reset(**kwargs)
 
-    if self.mode == 'append':
-      num_envs = self.env.num_envs
-      action = np.zeros((num_envs, 1))
-      # Create new observation with dense vector containing 0 (no previous action yet)
-      if obs.dense is not None:
-        # Append 0 to existing dense vector to represent no previous action
-        new_dense = np.concatenate([obs.dense, action], axis=1)
-      else:
-        # Create dense vector with just 0 for no previous action
-        new_dense = action
-      return Observation(frame=obs.frame, dense=new_dense), info
+    if obs.dense is not None:
+      # Append 0 to existing dense vector to represent no previous action
+      new_dense = np.concatenate([obs.dense, 0], axis=0)
+    else:
+      # Create dense vector with just 0 for no previous action
+      new_dense = 0
+    
+    return Observation(frame=obs.frame, dense=new_dense), info
 
 
-class HistoryEnv(gym.vector.VectorWrapper):
+class HistoryEnv(gym.Wrapper):
   """
   Maintains a history of the last N frames.
   config options:
@@ -383,12 +352,10 @@ class HistoryEnv(gym.vector.VectorWrapper):
     self.history_length = int(config.get('history_length', 1))
     if self.history_length < 1:
       raise ValueError("history_length must be >= 1")
-    self.states = [
-        deque(maxlen=self.history_length) for _ in range(self.env.num_envs)
-    ]
+    self.states = deque(maxlen=self.history_length)
 
-  def _get_single_env_history(self, history: deque) -> Observation:
-    history = list(history)
+  def _get_history_observation(self) -> Observation:
+    history = list(self.states)
     if len(history) == 0:
       raise RuntimeError("No frames in history.")
 
@@ -404,7 +371,7 @@ class HistoryEnv(gym.vector.VectorWrapper):
         dense_history.append(obs.dense)
 
     # Handle missing frames by padding with the first frame
-    if frame_history:
+    if len(frame_history) > 0:
       num_missing = self.history_length - len(frame_history)
       if num_missing > 0:
         first_frame = frame_history[0]
@@ -417,114 +384,88 @@ class HistoryEnv(gym.vector.VectorWrapper):
       stacked_frames = None
 
     # Dense vectors however are flattened
-    if dense_history:
+    if len(dense_history) > 0:
       num_missing = self.history_length - len(dense_history)
       if num_missing > 0:
         first_dense = dense_history[0]
         pad_dense = [first_dense for _ in range(num_missing)]
         dense_history = pad_dense + dense_history
-      flattened_dense = np.concatenate(dense_history)
+      flattened_dense = dense_history
     else:
       flattened_dense = None
 
     return Observation(frame=stacked_frames, dense=flattened_dense)
 
-  def _get_history(self) -> Observation:
-    env_observations = []
-    for i in range(self.env.unwrapped.num_envs):
-      env_observations.append(self._get_single_env_history(self.states[i]))
-    return merge_observations(env_observations)
-
   def step(self, action: int) -> Tuple[Observation, float, bool, bool, dict]:
     obs, reward, terminated, truncated, info = self.env.step(action)
 
-    for states, _obs in zip(self.states, obs.as_list()):
-      states.append(_obs)
-    ret_obs = self._get_history()
+    self.states.append(obs)
+    ret_obs = self._get_history_observation()
 
-    # If vectorized, we need to handle the last terminated or truncated states.
-    if np.any(terminated) or np.any(truncated):
-      for i, terminated_or_truncated in enumerate(
-          np.logical_or(terminated, truncated)):
-        if terminated_or_truncated:
-          self.states[i].clear()
+    if terminated or truncated:
+      self.states.clear()
+
     return ret_obs, reward, terminated, truncated, info
 
   def reset(self, **kwargs) -> Tuple[Observation, dict]:
     obs, info = self.env.reset(**kwargs)
-    self.states = [
-        deque(maxlen=self.history_length) for _ in range(self.env.num_envs)
-    ]
-    for states, _obs in zip(self.states, obs.as_list()):
-      states.append(_obs)
+    self.states.clear()
+    self.states.append(obs)
 
-    return self._get_history(), info
+    return self._get_history_observation(), info
 
 
-class CaptureRenderFrameEnv(gym.vector.VectorWrapper):
-  """
-  Captures the rendered frame from the environment after each step.
+class CaptureRenderFrameEnv(gym.Wrapper):
+  """Captures the rendered frame from the environment for display or for using as observation.
 
-  The rendered frame can be accessed via the `observation_frame`, attribute in `info`.
+  If `use_for_display` is true, the rendered frame can be accessed via the `observation_frame` attribute
+  in `info`.
 
-  config options:
-    - mode: str ; "capture" (default) or "replace"
-      - "capture": Only captures frame, returns original observation
-      - "replace": Returns rendered frame as the observation, ignores original observation
+  Args:
+  - config: A dictionary containing configuration options.
+    - use_for_observation: Returns rendered frame as the observation, ignores original observation.
+    - use_for_display: bool ; if True, the captured frame is stored in info for display purposes
+      in `info` observation_frame.
     - observation_is_frame: bool ; if True, the observation is expected to be a frame,
       otherwise we call render() on the environment.
-    - capture_num_envs: int ; the number of environments to capture rendered frame for. If not
-      specified, defaults to the number of environments in the vectorized environment.
   """
 
-  def __init__(self, env: VectorEnv, config: dict = None) -> None:
+  def __init__(self, env, config: dict) -> None:
     super().__init__(env)
-    self.rendered_frame: Optional[np.ndarray] = None
-    # We capture last rendered frame to render frames offset from the current step,
-    # as otherwise we show the next frame with the agents action values.
-    self.last_rendered_frame: Optional[np.ndarray] = None
-    config = config or {}
-    self.capture_num_envs = config.get('capture_num_envs', env.num_envs)
-    self.mode = config.get('mode', 'capture')
+
     self.observation_is_frame = config.get('observation_is_frame', False)
-    if self.mode not in ['capture', 'replace']:
-      raise ValueError(
-          f"Invalid mode '{self.mode}'. Must be 'capture' or 'replace'")
+    self.use_for_observation = config.get('use_for_observation', False)
+    self.use_for_display = config.get('use_for_display', False)
+    
+  def replace_or_capture(self, obs: Observation, info: dict) -> Observation:
+    # If there is no need to replace or capture, return original observation.
+    # This happens when the environment is not one of the ones displayed.
+    if not (self.use_for_observation or self.use_for_display):
+      return obs
+
+    if not self.observation_is_frame:
+      frame = self.env.unwrapped.render()
+    else:
+      frame = obs.frame
+
+    if self.use_for_display:
+      info['observation_frame'] = frame
+
+    if self.use_for_observation:
+      return Observation(frame=frame, dense=None)
+    else:  # mode == 'capture'
+      return obs
 
   def step(self, action: int) -> Tuple[Observation, float, bool, bool, dict]:
     obs, reward, terminated, truncated, info = self.env.step(action)
-
-    self.last_rendered_frame = self.rendered_frame
-    if not self.observation_is_frame:
-      self.rendered_frame = self.env.unwrapped.render()
-
-    else:
-      self.rendered_frame = obs.frame
-
-    info['observation_frame'] = self.last_rendered_frame
-    if self.mode == 'capture':
-      return obs, reward, terminated, truncated, info
-    if self.mode == 'replace':
-      return Observation(frame=self.rendered_frame,
-                         dense=None), reward, terminated, truncated, info
+    return self.replace_or_capture(obs, info), reward, terminated, truncated, info
 
   def reset(self, **kwargs) -> Tuple[Observation, dict]:
     obs, info = self.env.reset(**kwargs)
-    if not self.observation_is_frame:
-      self.rendered_frame = self.env.unwrapped.render()
-    else:
-      self.rendered_frame = obs.frame
-
-    info['observation_frame'] = self.rendered_frame
-    self.last_rendered_frame = self.rendered_frame
-    if self.mode == 'replace':
-      # For replace mode, we need to render the initial frame
-      return Observation(frame=self.rendered_frame, dense=None), info
-    else:  # mode == 'capture'
-      return obs, info
+    return self.replace_or_capture(obs, info), info
 
 
-class ClipRewardEnv(gym.vector.VectorWrapper):
+class ClipRewardEnv(gym.Wrapper):
   """
   Clips the reward to be between -1 and 1.
 
@@ -535,7 +476,7 @@ class ClipRewardEnv(gym.vector.VectorWrapper):
     - None
   """
 
-  def __init__(self, env: VectorEnv, config: dict = None) -> None:
+  def __init__(self, env, config: dict = None) -> None:
     super().__init__(env)
     self.clip_min = config.get('clip_min', -float('inf'))
     self.clip_max = config.get('clip_max', float('inf'))
@@ -546,64 +487,6 @@ class ClipRewardEnv(gym.vector.VectorWrapper):
     return obs, clipped_reward, terminated, truncated, info
 
 
-class AccumulatedRewardEnv(gym.vector.VectorWrapper):
-  """
-  Accumulates rewards over multiple steps and returns them in 'info'.
-  """
-
-  def __init__(self, env: VectorEnv) -> None:
-    super().__init__(env)
-    self.accumulated_reward = np.zeros(env.num_envs, dtype=np.float32)
-
-  def step(self, action: int) -> Tuple[Observation, float, bool, bool, dict]:
-    obs, reward, terminated, truncated, info = self.env.step(action)
-    self.accumulated_reward += reward
-    info['accumulated_reward'] = self.accumulated_reward.copy()
-    if np.any(terminated) or np.any(truncated):
-      info['terminated_accumulated_reward'] = self.accumulated_reward.copy()[terminated | truncated]
-      # Reset accumulated reward for environments that are done or truncated
-      self.accumulated_reward[terminated | truncated] = 0.0
-    return obs, reward, terminated, truncated, info
-
-  def reset(self, options=None, **kwargs) -> Tuple[Observation, dict]:
-    if options and 'reset_mask' in options:
-      reset_mask = options['reset_mask']
-      self.accumulated_reward[reset_mask] = 0.0
-    else:
-      self.accumulated_reward = np.zeros(self.env.num_envs, dtype=np.float32)
-    obs, info = self.env.reset(options=options, **kwargs)
-
-    return obs, info
-
-
-class AccumulatedStepsEnv(gym.vector.VectorWrapper):
-  """
-  Counts the number of steps taken in each environment and returns them in 'info'.
-  """
-
-  def __init__(self, env: VectorEnv) -> None:
-    super().__init__(env)
-    self.episode_steps = np.zeros(env.num_envs, dtype=np.int32)
-
-  def step(self, action: int) -> Tuple[Observation, float, bool, bool, dict]:
-    obs, reward, terminated, truncated, info = self.env.step(action)
-    self.episode_steps += 1
-    info['episode_steps'] = self.episode_steps.copy()
-    if np.any(terminated) or np.any(truncated):
-      info['terminated_episode_steps'] = self.episode_steps.copy()[terminated | truncated]
-      # Reset episode steps for environments that are done or truncated
-      self.episode_steps[terminated | truncated] = 0
-    return obs, reward, terminated, truncated, info
-
-  def reset(self, options=None, **kwargs) -> Tuple[Observation, dict]:
-    if options and 'reset_mask' in options:
-      reset_mask = options['reset_mask']
-      self.episode_steps[reset_mask] = 0
-    else:
-      self.episode_steps = np.zeros(self.env.num_envs, dtype=np.int32)
-    obs, info = self.env.reset(options=options, **kwargs)
-    return obs, info
-
 
 def create_environment(config: dict) -> gym.Env:
   """ Creates a Gym environment with specified wrappers.
@@ -613,49 +496,53 @@ def create_environment(config: dict) -> gym.Env:
     A Gym environment instance with the specified wrappers applied.
   """
   num_envs = config.get('num_envs', 1)
+  num_render_envs = config['render_layout'][0] * config['render_layout'][1]
 
-  # Mario environment needs JoypadSpace which is not vectorized, so we need to
-  # create a AsyncVectorEnv.
-  if 'SuperMarioBros' not in config['env_name']:
-    env = gym.make_vec(
-        config['env_name'],
-        num_envs=num_envs,
-        vectorization_mode="async",
-        render_mode="rgb_array")
-  else:
-    # Super Mario Bros environment is not compatible with vectorized environments.
-    def _create_mario_env():
-      mario_env = gym.make(config['env_name'])
-      from nes_py.wrappers import JoypadSpace
-      from gym_super_mario_bros.actions import SIMPLE_MOVEMENT
-      mario_env = JoypadSpace(mario_env, SIMPLE_MOVEMENT)
-      return mario_env
+  def _make_env(index: int) -> Callable[[], gym.Env]:
+    def _do_make() -> gym.Env:
+      env = gym.make(config['env_name'], render_mode='rgb_array')
 
-    env = AsyncVectorEnv([lambda: _create_mario_env() for _ in range(num_envs)])
+      # Special handling for Super Mario Bros environments
+      if 'SuperMarioBros' in config['env_name']:
+        from nes_py.wrappers import JoypadSpace
+        from gym_super_mario_bros.actions import SIMPLE_MOVEMENT
+        env = JoypadSpace(env, SIMPLE_MOVEMENT)
 
-  # Seed the environment if configured
-  if 'seed' in config:
-    env.reset(seed=config['seed'])
+      # Seed the environment if configured
+      if 'seed' in config:
+        env.reset(seed=config['seed'])
 
-  # Always wrap with ObservationWrapper first to ensure Observation objects
-  env = ObservationWrapper(
-      env, config.get('ObservationWrapper', {'input': 'frame'}))
-  env = AccumulatedRewardEnv(env)
-  env = AccumulatedStepsEnv(env)
+      # Always wrap with ObservationWrapper first to ensure Observation objects
+      env = ObservationWrapper(
+          env, config.get('ObservationWrapper', {'input': 'frame'}))
 
-  for wrapper in config.get('env_wrappers', []):
-    if wrapper == 'PreprocessFrameEnv':
-      env = PreprocessFrameEnv(env, config.get('PreprocessFrameEnv', {}))
-    elif wrapper == 'RepeatActionEnv':
-      env = RepeatActionEnv(env, config.get('RepeatActionEnv', {}))
-    elif wrapper == 'ReturnActionEnv':
-      env = ReturnActionEnv(env, config.get('ReturnActionEnv', {}))
-    elif wrapper == 'HistoryEnv':
-      env = HistoryEnv(env, config.get('HistoryEnv', {}))
-    elif wrapper == 'CaptureRenderFrameEnv':
-      env = CaptureRenderFrameEnv(env, config.get('CaptureRenderFrameEnv', {}))
-    elif wrapper == 'ClipRewardEnv':
-      env = ClipRewardEnv(env, config.get('ClipRewardEnv', {}))
-    else:
-      raise ValueError(f"Unknown environment wrapper: {wrapper}")
-  return env
+      for wrapper in config.get('env_wrappers', []):
+        if wrapper == 'PreprocessFrameEnv':
+          env = PreprocessFrameEnv(env, config.get('PreprocessFrameEnv', {}))
+        elif wrapper == 'RepeatActionEnv':
+          env = RepeatActionEnv(env, config.get('RepeatActionEnv', {}))
+        elif wrapper == 'ReturnActionEnv':
+          env = ReturnActionEnv(env, config.get('ReturnActionEnv', {}))
+        elif wrapper == 'HistoryEnv':
+          env = HistoryEnv(env, config.get('HistoryEnv', {}))
+        elif wrapper == 'CaptureRenderFrameEnv':
+          capture_render_frame_config = config.get('CaptureRenderFrameEnv', {})
+          # Optimization: disable "rendering" or "capture" when not needed, this
+          # drastically reduces IPC.
+          capture_render_frame_config['use_for_display'] = index < num_render_envs
+          env = CaptureRenderFrameEnv(env, capture_render_frame_config)
+        elif wrapper == 'ClipRewardEnv':
+          env = ClipRewardEnv(env, config.get('ClipRewardEnv', {}))
+        else:
+          raise ValueError(f"Unknown environment wrapper: {wrapper}")
+      
+      env = gym.wrappers.RecordEpisodeStatistics(env)
+      env = ObservationToDictWrapper(
+          env,
+          mock_obs=env.reset()[0]
+      )
+      return env
+    
+    return _do_make
+
+  return DictToObservationWrapper(AsyncVectorEnv([_make_env(i) for i in range(num_envs)]))

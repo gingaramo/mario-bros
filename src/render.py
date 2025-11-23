@@ -1,3 +1,4 @@
+from typing import List, Tuple
 import cv2
 import numpy as np
 import torch
@@ -124,6 +125,75 @@ def tile_frames_in_grid(frames, n, m):
   return final_frame
 
 
+def render_training_samples(all_observations: Tuple[torch.Tensor, torch.Tensor],
+                            all_actions: List[int],
+                            all_rewards: List[float],
+                            all_next_observations: Tuple[torch.Tensor, torch.Tensor],
+                            all_dones: List[bool],
+                            exemplars: int = 4):
+  if not should_render():
+    return
+
+  # Identify outlier samples based on rewards
+  rewards = list(enumerate(all_rewards))
+  rewards.sort(key=lambda x: x[1])
+  idx = rewards[:exemplars//2] # top negative rewards
+  idx += rewards[-(exemplars//2):] # top positive rewards
+  idx = list(map(lambda x: x[0], idx)) # keep the indexes only
+
+  all_observations = ((all_observations[0][idx]), all_observations[1][idx] if all_observations[1].numel() > 0 else all_observations[1])
+  all_actions = all_actions[idx]
+  all_rewards = all_rewards[idx]
+  all_next_observations = ((all_next_observations[0][idx]),
+                           all_next_observations[1][idx] if all_next_observations[1].numel() > 0 else all_next_observations[1])
+  all_dones = all_dones[idx]
+
+  frames = all_observations[0].cpu().detach().numpy().astype(np.uint8)
+  next_frames = all_next_observations[0].cpu().detach().numpy().astype(np.uint8)
+  side_input = all_observations[1].cpu().detach().numpy().astype(np.float32)
+
+  for i in range(frames.shape[0]):
+    exemplar_frames = frames[i]
+    next_exemplar_frames = next_frames[i]
+    # Stack frames horizontally for visualization
+    stacked = np.concatenate([exemplar_frames[i] for i in range(exemplar_frames.shape[0])] +
+                             [next_exemplar_frames[i] for i in range(next_exemplar_frames.shape[0])], axis=1)
+    # Scale stacked 4x the size
+    stacked = cv2.resize(stacked, (stacked.shape[1] * 4, stacked.shape[0] * 4),
+                        interpolation=cv2.INTER_NEAREST)
+
+    # If grayscale, add channel dimension for cv2
+    if stacked.ndim == 2:
+      stacked = cv2.cvtColor(stacked, cv2.COLOR_GRAY2BGR)
+    
+    # Render action, reward, done info below the stacked frames
+    try:
+      action_val = all_actions[i].item() if hasattr(all_actions[i], 'item') else int(all_actions[i])
+    except Exception:
+      action_val = all_actions[i]
+    try:
+      reward_val = all_rewards[i].item() if hasattr(all_rewards[i], 'item') else float(all_rewards[i])
+    except Exception:
+      reward_val = all_rewards[i]
+    try:
+      done_val = all_dones[i].item() if hasattr(all_dones[i], 'item') else bool(all_dones[i])
+    except Exception:
+      done_val = all_dones[i]
+
+    text = f"action: {action_val} | reward: {reward_val:.2f} | done: {done_val}"
+    text_height = 40
+    new_height = stacked.shape[0] + text_height
+    new_img = np.zeros((new_height, stacked.shape[1], 3), dtype=stacked.dtype)
+    new_img[:stacked.shape[0], :, :] = stacked
+    # Optional separator line
+    cv2.line(new_img, (0, stacked.shape[0]), (stacked.shape[1], stacked.shape[0]), (80, 80, 80), 1)
+    # Put text in the new area below the frames
+    cv2.putText(new_img, text, (10, stacked.shape[0] + 28),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+    stacked = new_img
+
+    _display_frame(f"Training Sample {i}", stacked)
+
 def maybe_render_dqn(x, side_input: torch.Tensor):
   if not should_render():
     return
@@ -236,30 +306,32 @@ def frame_with_q_values(next_state, q_values, action, labels, reward, upscale_fa
 
 def render(info, q_values, action, rewards, config, recording=None):
   labels = config['env']['env_action_labels']
-  upscale_factor = config.get('render_upscale_factor', 1)
-  layout = config.get('render_layout', None)
+  upscale_factor = config['env'].get('render_upscale_factor', 1)
+  layout = config['env'].get('render_layout', None)
+  
   if not should_render() and not recording:
     return
+  
+  if layout is None:
+    # Render square by default.
+    layout = (int(math.ceil(q_values.shape[0]**0.5)),
+              int(math.ceil(q_values.shape[0]**0.5)))
 
   assert 'observation_frame' in info, "Missing observation frame in info"
-  frame = info['observation_frame']
+  frame = info['observation_frame'][:layout[0]*layout[1]]
   # Take the first environment's data, for now. Might be good to render all.
 
   frames = []
-  for frame, q_values, action, reward in zip(frame, q_values, action, rewards):
+  for _frame, q_values, action, reward in zip(frame, q_values, action, rewards):
     # Render the frame with Q-values and action labels
-    frame = frame_with_q_values(frame, q_values, action, labels, reward,
+    env_frame = frame_with_q_values(_frame, q_values, action, labels, reward,
                                 upscale_factor)
-    frames.append(frame)
+    frames.append(env_frame)
 
   if recording:
-    recording.add_frame(frame[0])
+    recording.add_frame(frames[0])
 
   if should_render():
-    if layout is None:
-      # Render square by default.
-      layout = (int(math.ceil(q_values.shape[0]**0.5)),
-                int(math.ceil(q_values.shape[0]**0.5)))
     final_frame = tile_frames_in_grid(frames[:layout[0] * layout[1]],
                                       layout[0], layout[1])
     _display_frame("Frame with Q-values", final_frame)
